@@ -1,0 +1,31 @@
+{
+  "machineId": "dev-main",
+  "pollSeconds": 45,
+  "repository": "Letterblack0306/Letterblack_BirdEye",
+  "branch": "runtime/dev-main",
+  "tokenEnv": "BIRDEYE_GITHUB_TOKEN",
+  "workspaces": {
+    "access-browser-agent": {
+      "root": "G:\\Developments\\45_Accecc_Browser_Agent",
+      "database": "G:\\Developments\\Letterblack_BirdEye\\state\\workspace.db",
+      "validationProfiles": {
+        "default": [
+          ["npm.cmd", "run", "check"]
+        ],
+        "audit": [
+          ["npm.cmd", "run", "check"],
+          ["npm.cmd", "run", "audit:full"]
+        ]
+      }
+    },
+    "brew": {
+      "root": "G:\\Developments\\38_Brew_Creative_Agent",
+      "database": "G:\\Developments\\Letterblack_BirdEye\\state\\workspace.db",
+      "validationProfiles": {
+        "default": [
+          ["npm.cmd", "run", "check"]
+        ]
+      }
+    }
+  }
+}
