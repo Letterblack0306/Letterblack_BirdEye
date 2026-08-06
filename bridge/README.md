@@ -26,7 +26,7 @@ GitHub request JSON
 - an existing response makes a request idempotent;
 - output is bounded before publishing.
 
-The first implementation is deliberately read-only. It does not pull, merge, checkout, reset, edit, delete, or run arbitrary request text.
+The first implementation is deliberately read-only. It does not pull, merge, checkout, reset, edit, delete, upload artifacts, or run arbitrary request text.
 
 ## Repository layout
 
@@ -64,24 +64,63 @@ Supported operations:
 
 `refresh_index` is currently an inspection-compatible operation name. It does not execute an index mutation in this first version.
 
+## Artifact-root placeholder
+
+A workspace may reserve future image or screenshot sources without enabling any upload behavior:
+
+```json
+{
+  "artifactRoots": {
+    "browser-screenshots": {
+      "enabled": false,
+      "path": "",
+      "patterns": ["*.png", "*.jpg", "*.jpeg", "*.webp"],
+      "maxFileBytes": 10485760,
+      "publish": false
+    }
+  }
+}
+```
+
+Current behavior:
+
+- the placeholder is configuration-only;
+- an empty path is valid while `enabled` is `false`;
+- BirdEye does not watch, hash, encode, or upload these files yet;
+- no browser screenshot location is assumed;
+- the actual path must later be discovered from the browser agent's runtime or configuration;
+- publishing should remain disabled until binary limits, duplicate handling, redaction, retention, and access rules are implemented and tested.
+
+The intended later flow is:
+
+```text
+configured artifact root
+→ discover matching image files
+→ calculate SHA-256
+→ skip duplicate content
+→ publish selected binary artifact and metadata
+→ reference the repository artifact path in a BirdEye response
+```
+
 ## Local setup
 
 1. Copy `bridge/bridge.config.example.json` to `bridge.config.json` outside version control or keep it ignored locally.
 2. Edit machine ID, runtime branch, workspace mappings, database locations, and local validation profiles.
-3. Create a fine-grained GitHub token restricted to `Letterblack_BirdEye` contents read/write.
-4. Set the token for the current PowerShell session:
+3. Leave artifact roots disabled until a real output path has been verified.
+4. Create a fine-grained GitHub token restricted to `Letterblack_BirdEye` contents read/write.
+5. Set the token for the current PowerShell session:
 
 ```powershell
 $env:BIRDEYE_GITHUB_TOKEN = "<token>"
 ```
 
-5. Test one poll:
+6. Test one poll:
 
 ```powershell
 python .\bridge\birdeye_request_bridge.py once --config .\bridge.config.json
 ```
 
-6. Run continuously:
+7. Run continuously:
 
 ```powershell
 python .\bridge\birdeye_request_bridge.py run --config .\bridge.config.json
