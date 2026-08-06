@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "requestId": "req-20260807-032200-ui-accessibility",
+  "createdAt": "2026-08-06T23:22:00Z",
+  "expiresAt": "2026-08-07T00:22:00Z",
+  "workspaceId": "access-browser-agent",
+  "operation": "workspace_diagnosis",
+  "scope": {
+    "validationProfile": "default"
+  },
+  "mutationAllowed": false
+}
