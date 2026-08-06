@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "requestId": "req-20260806-231700-access-browser-agent",
+  "createdAt": "2026-08-06T23:17:00Z",
+  "expiresAt": "2026-08-06T23:47:00Z",
+  "workspaceId": "access-browser-agent",
+  "operation": "workspace_diagnosis",
+  "scope": {
+    "validationProfile": "default"
+  },
+  "mutationAllowed": false
+}
