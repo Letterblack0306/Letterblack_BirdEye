@@ -7,7 +7,7 @@
   "workspaces": {
     "access-browser-agent": {
       "root": "G:\\Developments\\45_Accecc_Browser_Agent",
-      "database": "G:\\Developments\\Letterblack_BirdEye\\state\\workspace.db",
+      "database": "C:\\MCP Local\\Letterblack_BirdEye\\state\\workspace.db",
       "validationProfiles": {
         "default": [
           ["npm.cmd", "run", "check"]
@@ -20,7 +20,7 @@
     },
     "brew": {
       "root": "G:\\Developments\\38_Brew_Creative_Agent",
-      "database": "G:\\Developments\\Letterblack_BirdEye\\state\\workspace.db",
+      "database": "C:\\MCP Local\\Letterblack_BirdEye\\state\\workspace.db",
       "validationProfiles": {
         "default": [
           ["npm.cmd", "run", "check"]
