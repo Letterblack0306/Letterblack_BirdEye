@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "requestId": "req-20260807-032200-ui-accessibility",
+  "machineId": "dev-main",
+  "workspaceId": "access-browser-agent",
+  "operation": "workspace_diagnosis",
+  "status": "completed",
+  "completedAt": "2026-08-06T23:54:04.934411+00:00",
+  "git": {
+    "branch": "fix/workbench-ux-consolidation",
+    "head": "6ab0fd723179953189cbf21ba5f63072f01dbd2b",
+    "dirty": true,
+    "statusShort": [
+      " M .audit/fast-fail-report.json"
+    ],
+    "upstream": "origin/fix/workbench-ux-consolidation",
+    "divergence": "0\t0"
+  },
+  "index": {
+    "available": false
+  },
+  "validation": {
+    "profile": "default",
+    "checks": [
+      {
+        "argv": [
+          "npm.cmd",
+          "run",
+          "check"
+        ],
+        "exitCode": 1,
+        "stdout": "\n> access-browser-agent@0.1.0 check\n> npm run check:fast-fail && npm run check:workspace-contract && npm run check:agent-led && node --check src/system/local-runtime-diagnostics.js && node test/local-runtime-diagnostics-smoke.js && node --check src/system/ide-preferences.js && node test/ide-preferences-smoke.js && node --check src/system/governed-terminal.js && node test/governed-terminal-smoke.js && node --check src/system/evidence-receipt-store.js && node test/evidence-receipt-store-smoke.js && node --check src/system/workspace-git-status.js && node test/workspace-git-status-smoke.js && node --check src/system/skill-catalog.js && node test/skill-catalog-smoke.js && node --check src/system/workbench-layout.js && node test/workbench-layout-smoke.js && node test/trace-ui-smoke.js && node --check src/loop/implementation-executor.js && node test/implementation-executor-smoke.js && node --check src/system/browser-automation.js && node test/browser-automation-smoke.js && node --check src/system/mcp-client.js && node --check electron/main.js && node --check electron/preload.js && node --check electron/shell-module-manager.js && node --check electron/settings-module.js && node --check electron/renderer.js && node --check electron/agent-event-store.js && node --check electron/agent-progress-projector.js && node --check electron/agent-progress-view.js && node --check electron/agent-owned-browser-controls.js && node test/agent-owned-browser-controls-smoke.js && node --check electron/editor-find-replace.js && node --check test/integration-smoke.js && node test/integration-smoke.js && node test/electron-shell-smoke.js && node --check electron/lm-studio-settings-bridge.js && node test/lm-studio-settings-smoke.js && node test/runtime-controls-ui-smoke.js && node test/agent-event-store-smoke.js\n\n\n> access-browser-agent@0.1.0 check:fast-fail\n> node scripts/fast-fail-audit.mjs\n\nPASS FF002 npm start must launch Electron\nPASS FF003 Electron dependency must be declared\nFAIL FF004 Projector, store, renderer, and progress view must load in dependency order\nFAIL FF005 Shared event store must preserve toolCallId\nFAIL FF006 Shared event store must preserve inputSummary\nFAIL FF007 Shared event store must preserve outputSummary\nFAIL FF008 Progress view must subscribe through shared event store\nPASS FF009 Progress view must not unconditionally consume raw agent events\nPASS FF010 Renderer must attach the shared event store\nFAIL FF011 Standalone browser template must not duplicate Agent-owned browser controls\nFAIL FF012 Legacy browser_loop_stopped phase must not remain\nPASS FF013 Canonical browser_loop.stopped phase must be handled\nFAIL FF014 Agent timeline must use readable phase formatting\nFAIL FF015 Trace events without eventId must receive a composite fallback id\nFAIL FF016 Provider identity must be preserved separately from health\nFAIL FF017 Duplicate template ids: checkBrowser, listPages, capturePage, browserResult, browserPages, browserCapture\nFAIL FF018 Unreachable modules remain: activity, changes, evidence, runtime, skills\nPASS FF019 Layout must not mount a second Browser module\nPASS FF-CHECK-electron/agent-event-store.js npm run check must syntax-check electron/agent-event-store.js\nPASS FF-CHECK-electron/agent-progress-projector.js npm run check must syntax-check electron/agent-progress-projector.js\nPASS FF-CHECK-electron/agent-progress-view.js npm run check must syntax-check electron/agent-progress-view.js\nPASS FF-CHECK-electron/settings-module.js npm run check must syntax-check electron/settings-module.js\nPASS FF-CHECK-electron/shell-module-manager.js npm run check must syntax-check electron/shell-module-manager.js\nPASS FF-CHECK-electron/renderer.js npm run check must syntax-check electron/renderer.js\n",
+        "stderr": "FAST_FAIL_RESULT=FAIL failures=12\n",
+        "elapsedSeconds": 1.07
+      }
+    ],
+    "verdict": "FAIL"
+  },
+  "verdict": "FAIL"
+}
