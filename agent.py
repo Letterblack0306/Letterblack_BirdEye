@@ -597,6 +597,86 @@ def update_run(
     )
 
 
+
+def index_file_event(
+    ctx: Context,
+    root: KnowledgeRoot,
+    physical_path: Path,
+    virtual: str,
+    *,
+    run_id: str,
+    deleted: bool = False,
+) -> dict[str, Any]:
+    """Incrementally update a single file row in the live SQLite index.
+
+    The live filesystem watcher calls this so workspace.db stays current
+    without a full re-scan. It reuses the same files table and write path as
+    trace_workspace -- there is no second index and no second write authority.
+    """
+    if deleted:
+        connection = open_database()
+        try:
+            connection.execute(
+                "DELETE FROM files WHERE root=? AND path=?", (root.name, virtual)
+            )
+            connection.commit()
+            return {"ok": True, "action": "deleted", "root": root.name, "path": virtual}
+        finally:
+            connection.close()
+
+    max_bytes = int(ctx.config.get("max_file_bytes", 5_000_000))
+    try:
+        stat = physical_path.stat()
+    except (OSError, PermissionError):
+        return {"ok": False, "action": "unreadable", "root": root.name, "path": virtual}
+    size = int(stat.st_size)
+    modified_ns = int(stat.st_mtime_ns)
+    file_hash: str | None = None
+    status = "unhashed"
+    error: str | None = None
+    if size > max_bytes:
+        status = "too_large"
+    else:
+        try:
+            file_hash = sha256_file(physical_path)
+            status = "hashed"
+        except (OSError, PermissionError) as exc:
+            status = "unreadable"
+            error = f"{type(exc).__name__}: {exc}"
+
+    now = utc_now()
+    connection = open_database()
+    try:
+        connection.execute(
+            """
+            INSERT INTO files(
+                root,path,physical_path,size,modified_ns,sha256,hash_status,error,
+                first_seen_at,last_seen_at,last_seen_run
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(root,path) DO UPDATE SET
+                physical_path=excluded.physical_path,
+                size=excluded.size,
+                modified_ns=excluded.modified_ns,
+                sha256=excluded.sha256,
+                hash_status=excluded.hash_status,
+                error=excluded.error,
+                last_seen_at=excluded.last_seen_at,
+                last_seen_run=excluded.last_seen_run
+            """,
+            (
+                root.name, virtual, str(physical_path), size, modified_ns, file_hash,
+                status, error, now, now, run_id,
+            ),
+        )
+        connection.commit()
+        return {
+            "ok": True, "action": "upserted", "root": root.name, "path": virtual,
+            "hash_status": status,
+        }
+    finally:
+        connection.close()
+
+
 def trace_workspace(
     ctx: Context,
     *,

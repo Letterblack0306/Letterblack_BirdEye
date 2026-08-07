@@ -182,11 +182,152 @@ def invoke(tool: str, params: dict[str, Any]) -> dict[str, Any]:
     return handler(**params)
 
 
+
+def _tool_definition(name, description, properties, required):
+    return {
+        "name": name,
+        "description": description,
+        "inputSchema": {
+            "type": "object",
+            "properties": properties,
+            "required": required,
+        },
+    }
+
+
+_TOOL_DEFINITIONS = [
+    _tool_definition(
+        "knowledge_route",
+        "Classify a task by failure class and route to GPT-Knowledge canonical docs "
+        "(method selection happens before source selection).",
+        {
+            "task": {"type": "string", "description": "The task or problem to route."},
+        },
+        ["task"],
+    ),
+    _tool_definition(
+        "knowledge_read",
+        "Read one GPT-Knowledge document by canonical path (confined to the knowledge root).",
+        {
+            "reference": {"type": "string",
+                          "description": "Canonical doc path, e.g. 000_START_HERE.md or "
+                                         "ai-agents/unified-agent-engineering-methods.md."},
+        },
+        ["reference"],
+    ),
+    _tool_definition(
+        "birdeye_search",
+        "Rank-indexed search over the live SQLite index; every result carries "
+        "root_class and source_class trust tags.",
+        {
+            "query": {"type": "string"},
+            "max_results": {"type": "integer", "minimum": 1, "maximum": 200},
+            "extensions": {"type": "string", "description": "Optional comma-separated file extensions to restrict."},
+            "roots": {"type": "string", "description": "Optional comma-separated root names to restrict."},
+        },
+        ["query"],
+    ),
+    _tool_definition(
+        "birdeye_inspect",
+        "Read one indexed file by virtual path (root/relative).",
+        {
+            "path": {"type": "string", "description": "Virtual path, e.g. gpt-knowledge/knowledge-index.json."},
+        },
+        ["path"],
+    ),
+    _tool_definition(
+        "birdeye_roots",
+        "List configured knowledge roots with their root_class trust label.",
+        {},
+        [],
+    ),
+    _tool_definition(
+        "birdeye_status",
+        "SQLite index health for the shared state/workspace.db.",
+        {},
+        [],
+    ),
+]
+
+
+def _send(message) -> None:
+    sys.stdout.write(json.dumps(message, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+def _text_content(value) -> list[dict[str, str]]:
+    return [{"type": "text", "text": json.dumps(value, ensure_ascii=False, indent=2)}]
+
+
+def serve_stdio() -> None:
+    """Native MCP transport: JSON-RPC 2.0 over stdio, newline-delimited.
+
+    Implements initialize / notifications/initialized / ping / tools/list /
+    tools/call over the six proven functions. The --args CLI harness remains
+    for diagnostics only.
+    """
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        method = message.get("method")
+        request_id = message.get("id")
+        params = message.get("params") or {}
+
+        if method == "initialize":
+            _send({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "protocolVersion": params.get("protocolVersion", "2024-11-05"),
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "birdeye", "version": "0.1.0"},
+                },
+            })
+        elif method == "notifications/initialized":
+            continue
+        elif method == "ping":
+            if request_id is not None:
+                _send({"jsonrpc": "2.0", "id": request_id, "result": {}})
+        elif method == "tools/list":
+            _send({"jsonrpc": "2.0", "id": request_id, "result": {"tools": _TOOL_DEFINITIONS}})
+        elif method == "tools/call":
+            name = params.get("name")
+            arguments = dict(params.get("arguments") or {})
+            try:
+                result = invoke(name, arguments)
+                _send({"jsonrpc": "2.0", "id": request_id, "result": {"content": _text_content(result)}})
+            except Exception as exc:  # noqa: BLE001 - transport surfaces any tool error
+                _send({
+                    "jsonrpc": "2.0", "id": request_id,
+                    "result": {
+                        "isError": True,
+                        "content": [{"type": "text", "text": f"{type(exc).__name__}: {exc}"}],
+                    },
+                })
+        else:
+            if request_id is not None:
+                _send({
+                    "jsonrpc": "2.0", "id": request_id,
+                    "error": {"code": -32601, "message": f"method not found: {method}"},
+                })
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="BirdEye thin MCP surface (CLI proof harness)")
-    parser.add_argument("tool", choices=sorted(_TOOL_REGISTRY))
-    parser.add_argument("--args", help="JSON object of tool arguments")
+    parser = argparse.ArgumentParser(description="BirdEye MCP surface (native stdio transport; --args diagnostic harness)")
+    parser.add_argument("tool", nargs="?", choices=sorted(_TOOL_REGISTRY), help="tool name for the diagnostic --args harness")
+    parser.add_argument("--args", help="JSON object of tool arguments (diagnostic harness)")
+    parser.add_argument("--stdio", action="store_true", help="run the native MCP stdio transport")
     args = parser.parse_args(argv)
+    if args.stdio:
+        serve_stdio()
+        return 0
+    if not args.tool:
+        parser.error("a tool name is required unless --stdio is used")
     params = json.loads(args.args) if args.args else {}
     try:
         result = invoke(args.tool, params)
