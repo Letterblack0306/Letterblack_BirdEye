@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "requestId": "aba-1786093003887-06fbd50a",
+  "createdAt": "2026-08-07T08:56:43.887Z",
+  "expiresAt": "2026-08-07T09:11:43.887Z",
+  "workspaceId": "access-browser-agent",
+  "operation": "workspace_diagnosis",
+  "scope": {
+    "validationProfile": "default",
+    "handoffId": "06fbd50a-3794-45b1-aa17-fd2ca03406a8",
+    "headSha": "9eaa8335a129d3a6aaf1fc9b3e8904ed96530e2f",
+    "diffSha256": "1e98a9fe3963c4fe486edba1885902f6ebc74b9f854ab83789f5fc9f9b1c5fe8"
+  },
+  "mutationAllowed": false
+}
