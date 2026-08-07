@@ -1,16 +1,20 @@
 """BirdEye thin MCP surface.
 
-Six MCP-style tools over a shared SQLite index:
+Eight MCP-style tools over the shared BirdEye evidence/index layer:
 
   Knowledge routing (GPT-Knowledge, method-before-source):
-    knowledge_route(task)   -> classify by failure class + route to canonical docs
-    knowledge_read(reference) -> read one knowledge document by canonical path
+    knowledge_route(task)       -> classify by failure class + route to canonical docs
+    knowledge_read(reference)   -> read one knowledge document by canonical path
 
   Workspace evidence (BirdEye read-only indexer):
-    birdeye_search(query, ...) -> rank-indexed matches, tagged root_class/source_class
-    birdeye_inspect(path)      -> read one file by virtual path (root/relative)
-    birdeye_roots()            -> configured knowledge roots + root_class
-    birdeye_status()           -> SQLite index health
+    birdeye_search(query, ...)  -> rank-indexed matches, tagged root_class/source_class
+    birdeye_inspect(path)       -> read one file by virtual path (root/relative)
+    birdeye_roots()             -> configured roots + root_class
+    birdeye_status()            -> SQLite index health
+
+  Workspace/revision identity (read-only Git evidence):
+    workspace_identity(...)     -> configured workspace + exact observed HEAD identity
+    revision_status(...)        -> staged/unstaged/untracked/upstream revision state
 
 Trust invariant: root_class distinguishes workspace (live evidence),
 knowledge (methodology / decision guidance), and reference (examples /
@@ -35,6 +39,10 @@ from agent import (
     inspect_file,
     load_json,
     search_workspace,
+)
+from workspace_identity import (
+    revision_status as _revision_status,
+    workspace_identity as _workspace_identity,
 )
 
 # Failure-class table consolidated from GPT-Knowledge
@@ -101,8 +109,6 @@ def knowledge_route(task: str) -> dict[str, Any]:
         "task": task,
         "classification": {"failure_class": _classify_failure(task)},
         "domains": matched,
-        # Canonical agent-engineering guide is the primary method destination
-        # for agent work; source-specific studies are provenance only.
         "engineering_guide": "ai-agents/unified-agent-engineering-methods.md",
         "router": str(manifest_path),
     }
@@ -150,7 +156,7 @@ def birdeye_inspect(path: str) -> dict[str, Any]:
 
 
 def birdeye_roots() -> dict[str, Any]:
-    """Configured knowledge roots with their root_class trust label."""
+    """Configured roots with their root_class trust label."""
     ctx = _load_ctx()
     return {
         "knowledge_roots": [
@@ -165,6 +171,16 @@ def birdeye_status() -> dict[str, Any]:
     return database_status()
 
 
+def workspace_identity(workspace: str | None = None) -> dict[str, Any]:
+    """Read-only workspace/Git identity bound to the exact observed HEAD."""
+    return _workspace_identity(workspace)
+
+
+def revision_status(workspace: str | None = None) -> dict[str, Any]:
+    """Read-only staged/unstaged/untracked/upstream state bound to HEAD."""
+    return _revision_status(workspace)
+
+
 _TOOL_REGISTRY: dict[str, tuple[str, ...]] = {
     "knowledge_route": ("task",),
     "knowledge_read": ("reference",),
@@ -172,6 +188,8 @@ _TOOL_REGISTRY: dict[str, tuple[str, ...]] = {
     "birdeye_inspect": ("path",),
     "birdeye_roots": (),
     "birdeye_status": (),
+    "workspace_identity": ("workspace",),
+    "revision_status": ("workspace",),
 }
 
 
@@ -180,7 +198,6 @@ def invoke(tool: str, params: dict[str, Any]) -> dict[str, Any]:
     if handler is None:
         return {"ok": False, "error": f"unknown tool: {tool}"}
     return handler(**params)
-
 
 
 def _tool_definition(name, description, properties, required):
@@ -237,7 +254,7 @@ _TOOL_DEFINITIONS = [
     ),
     _tool_definition(
         "birdeye_roots",
-        "List configured knowledge roots with their root_class trust label.",
+        "List configured roots with their root_class trust label.",
         {},
         [],
     ),
@@ -245,6 +262,30 @@ _TOOL_DEFINITIONS = [
         "birdeye_status",
         "SQLite index health for the shared state/workspace.db.",
         {},
+        [],
+    ),
+    _tool_definition(
+        "workspace_identity",
+        "Return configured workspace identity and read-only Git repository/worktree evidence, "
+        "bound to the exact HEAD observed during collection.",
+        {
+            "workspace": {
+                "type": "string",
+                "description": "Optional configured workspace root name. Required only when multiple workspace roots exist.",
+            },
+        },
+        [],
+    ),
+    _tool_definition(
+        "revision_status",
+        "Return read-only HEAD/branch/upstream plus staged, unstaged and untracked paths. "
+        "Runtime-active and validated states remain explicitly unverified.",
+        {
+            "workspace": {
+                "type": "string",
+                "description": "Optional configured workspace root name. Required only when multiple workspace roots exist.",
+            },
+        },
         [],
     ),
 ]
@@ -260,12 +301,7 @@ def _text_content(value) -> list[dict[str, str]]:
 
 
 def serve_stdio() -> None:
-    """Native MCP transport: JSON-RPC 2.0 over stdio, newline-delimited.
-
-    Implements initialize / notifications/initialized / ping / tools/list /
-    tools/call over the six proven functions. The --args CLI harness remains
-    for diagnostics only.
-    """
+    """Native MCP transport: JSON-RPC 2.0 over stdio, newline-delimited."""
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -285,7 +321,7 @@ def serve_stdio() -> None:
                 "result": {
                     "protocolVersion": params.get("protocolVersion", "2024-11-05"),
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "birdeye", "version": "0.1.0"},
+                    "serverInfo": {"name": "birdeye", "version": "0.2.0"},
                 },
             })
         elif method == "notifications/initialized":
@@ -340,4 +376,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
