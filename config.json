@@ -1,0 +1,14 @@
+{
+  "knowledge_roots": [
+    {
+      "name": "access-browser-agent",
+      "path": "G:\\Developments\\45_Accecc_Browser_Agent",
+      "root_class": "workspace"
+    },
+    {
+      "name": "gpt-knowledge",
+      "path": "C:\\MCP Local\\GPT-Knowledge",
+      "root_class": "knowledge"
+    }
+  ]
+}

@@ -85,6 +85,10 @@ _AUTHORIZED_PROGRESS_FIELDS: frozenset[str] = frozenset({
 })
 
 
+_ALLOWED_ROOT_CLASSES: frozenset[str] = frozenset({"workspace", "reference", "knowledge"})
+
+
+
 class GovernanceError(RuntimeError):
     pass
 
@@ -290,6 +294,13 @@ class Context:
             if not isinstance(item, dict):
                 raise GovernanceError("Each knowledge_roots entry must be an object")
             name = safe_root_name(str(item.get("name", "")))
+            root_class = str(item.get("root_class", "workspace") or "workspace").strip().lower()
+            if root_class not in _ALLOWED_ROOT_CLASSES:
+                raise GovernanceError(
+                    f"Knowledge root '{name}' has unsupported root_class '{root_class}' "
+                    f"(allowed: {', '.join(sorted(_ALLOWED_ROOT_CLASSES))})"
+                )
+
             if name == "lbe-reference":
                 raise GovernanceError(
                     "Knowledge root name 'lbe-reference' is reserved for bundled references"
@@ -305,7 +316,7 @@ class Context:
                 raise GovernanceError(f"Duplicate knowledge root path: {path}")
             if not path.exists() or not path.is_dir():
                 raise FileNotFoundError(f"Knowledge root does not exist: {path}")
-            roots.append(KnowledgeRoot(name, path, "workspace"))
+            roots.append(KnowledgeRoot(name, path, root_class))
             names.add(name)
             paths.add(key)
 
@@ -963,7 +974,12 @@ def search_workspace(
 
             # Source classification for noise deprioritization.
             classification, penalty = _classify_source(virtual)
-            if root is not None and root.root_class == "reference":
+            if root is not None and root.root_class == "knowledge":
+                # GPT-Knowledge material is methodology / decision guidance, not
+                # workspace source. Tag it explicitly so knowledge can never
+                # masquerade as evidence about the active project.
+                classification = "knowledge"
+            elif root is not None and root.root_class == "reference":
                 metadata_parse_status, gallery_metadata = reference_metadata(physical, content)
                 # Bundled YAML support files are indexed as raw evidence, but only
                 # gallery records participate in reference-pattern retrieval.
