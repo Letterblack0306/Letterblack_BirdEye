@@ -1,0 +1,6 @@
+config.json
+state/
+__pycache__/
+tests/__pycache__/
+bridge/__pycache__/
+bridge/bridge.config.json
