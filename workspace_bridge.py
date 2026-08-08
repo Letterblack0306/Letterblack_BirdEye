@@ -494,7 +494,7 @@ def _command_allowed(argv: tuple[str, ...], workspace_path: Path) -> tuple[bool,
             return True, "npm ci"
         elif len(argv) == 2 and argv[1] == "--version":
             return True, "npm version"
-        return True, "npm command"
+        return False, f"npm command not allowlisted: {argv[1] if len(argv) > 1 else 'unknown'}"
     if executable in {"python", "python.exe"}:
         if len(argv) > 2 and argv[1] == "-m":
             module = argv[2].lower()
@@ -504,7 +504,7 @@ def _command_allowed(argv: tuple[str, ...], workspace_path: Path) -> tuple[bool,
                 return True, "pip install"
         elif len(argv) == 2 and argv[1] == "--version":
             return True, "python version"
-        return True, "python command"
+        return False, f"python command not allowlisted: {' '.join(argv[1:])}"
     project_scripts = _load_project_scripts(workspace_path)
     script_name = Path(argv[0]).stem.lower()
     if script_name in project_scripts:
@@ -512,7 +512,7 @@ def _command_allowed(argv: tuple[str, ...], workspace_path: Path) -> tuple[bool,
     for arg in argv[1:]:
         if _path_escapes_workspace(workspace_path, arg):
             return False, f"path escapes workspace: {arg}"
-    return True, "generic command"
+    return False, f"command not allowlisted: {executable}"
 
 
 def _journal_path(config_path: Path) -> Path:

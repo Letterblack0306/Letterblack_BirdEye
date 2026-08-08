@@ -383,3 +383,57 @@ def test_stdout_stderr_captured(tmp_path, monkeypatch):
     assert result["stderr"] == "err data"
     assert result["exit_code"] == 2
     assert result["ok"] is False
+def test_unknown_executable_rejected():
+    allowed, reason = _command_allowed(("curl", "https://example.com"), Path("."))
+    assert allowed is False
+    assert "not allowlisted" in reason.lower()
+
+def test_certutil_rejected():
+    allowed, reason = _command_allowed(("certutil", "-decode", "x"), Path("."))
+    assert allowed is False
+    assert "not allowlisted" in reason.lower()
+
+def test_rundll32_rejected():
+    allowed, reason = _command_allowed(("rundll32", "shell32.dll", "Control_RunDLL"), Path("."))
+    assert allowed is False
+    assert "not allowlisted" in reason.lower()
+
+def test_arbitrary_python_script_rejected():
+    allowed, reason = _command_allowed(("python", "arbitrary_script.py"), Path("."))
+    assert allowed is False
+    assert "not allowlisted" in reason.lower()
+
+def test_python_c_flag_rejected():
+    allowed, reason = _command_allowed(("python", "-c", "import os; os.system('ls')"), Path("."))
+    assert allowed is False
+    assert "not allowlisted" in reason.lower()
+
+def test_unknown_npm_command_rejected():
+    allowed, reason = _command_allowed(("npm.cmd", "exec", "something"), Path("."))
+    assert allowed is False
+    assert "not allowlisted" in reason.lower()
+
+def test_arbitrary_npm_command_rejected():
+    allowed, reason = _command_allowed(("npm.cmd", "arbitrary"), Path("."))
+    assert allowed is False
+    assert "not allowlisted" in reason.lower()
+
+def test_unknown_executable_rejected():
+    allowed, reason = _command_allowed(("unknown.exe", "arg"), Path("."))
+    assert allowed is False
+    assert "not allowlisted" in reason.lower()
+
+def test_run_command_rejects_arbitrary_executable(tmp_path):
+    config = _config(tmp_path)
+    with pytest.raises(BridgeError, match="command not allowlisted"):
+        run_command(RunRequest("demo", ("curl", "https://example.com")), config)
+
+def test_run_command_rejects_arbitrary_python(tmp_path):
+    config = _config(tmp_path)
+    with pytest.raises(BridgeError, match="not allowlisted"):
+        run_command(RunRequest("demo", ("python", "evil.py")), config)
+
+def test_run_command_rejects_unknown_npm(tmp_path):
+    config = _config(tmp_path)
+    with pytest.raises(BridgeError, match="not allowlisted"):
+        run_command(RunRequest("demo", ("npm.cmd", "exec", "something")), config)
