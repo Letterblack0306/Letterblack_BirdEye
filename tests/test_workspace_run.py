@@ -383,7 +383,7 @@ def test_stdout_stderr_captured(tmp_path, monkeypatch):
     assert result["stderr"] == "err data"
     assert result["exit_code"] == 2
     assert result["ok"] is False
-def test_unknown_executable_rejected():
+def test_curl_executable_rejected():
     allowed, reason = _command_allowed(("curl", "https://example.com"), Path("."))
     assert allowed is False
     assert "not allowlisted" in reason.lower()
@@ -418,7 +418,7 @@ def test_arbitrary_npm_command_rejected():
     assert allowed is False
     assert "not allowlisted" in reason.lower()
 
-def test_unknown_executable_rejected():
+def test_unknown_exe_rejected():
     allowed, reason = _command_allowed(("unknown.exe", "arg"), Path("."))
     assert allowed is False
     assert "not allowlisted" in reason.lower()
