@@ -207,7 +207,7 @@ def test_run_sequence_stops_on_failure(tmp_path, monkeypatch):
     config = _config(tmp_path)
     captured: list[tuple[str, ...]] = []
 
-    def fake_execute(workspace, argv, timeout_seconds, config_path, task_id=None, capture_mutation=False):
+    def fake_execute(workspace, argv, timeout_seconds, config_path, task_id=None, capture_mutation=False, history=None):
         captured.append(argv)
         result = _make_step_results(argv)
         result["index"] = len(captured)
@@ -237,7 +237,7 @@ def test_run_sequence_allows_stop_on_failure_false(tmp_path, monkeypatch):
     config = _config(tmp_path)
     captured: list[tuple[str, ...]] = []
 
-    def fake_execute(workspace, argv, timeout_seconds, config_path, task_id=None, capture_mutation=False):
+    def fake_execute(workspace, argv, timeout_seconds, config_path, task_id=None, capture_mutation=False, history=None):
         captured.append(argv)
         return _make_step_results(argv)
 
