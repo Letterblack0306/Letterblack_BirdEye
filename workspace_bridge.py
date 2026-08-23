@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -602,6 +603,7 @@ def _execute_argv(
     config_path: Path,
     task_id: str | None = None,
     capture_mutation: bool = False,
+    history: Any = None,
 ) -> dict[str, Any]:
     from execution_evidence import build_execution_receipt, capture_diff_state, empty_diff_state
 
@@ -615,6 +617,11 @@ def _execute_argv(
         head_before, head_ok = _git_head(workspace.path)
 
     diff_before = capture_diff_state(workspace.path)
+    if history is not None and diff_before.get("is_repository"):
+        history.emit("git.before_evidence",
+                     diff_state_sha256=diff_before["diff_state_sha256"],
+                     head=diff_before["head"],
+                     changed_path_count=len(diff_before["changed_paths"]))
     env = os.environ.copy()
     env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 
@@ -675,6 +682,18 @@ def _execute_argv(
 
     try:
         diff_after = capture_diff_state(workspace.path)
+        if history is not None:
+            history.emit("command.completed",
+                         argv=list(argv),
+                         exit_code=exit_code,
+                         timed_out=timed_out,
+                         stdout_sha256=hashlib.sha256((stdout or "").encode("utf-8")).hexdigest(),
+                         stderr_sha256=hashlib.sha256((stderr or "").encode("utf-8")).hexdigest())
+            if diff_after.get("is_repository"):
+                history.emit("git.after_evidence",
+                             diff_state_sha256=diff_after["diff_state_sha256"],
+                             head=diff_after["head"],
+                             changed_path_count=len(diff_after["changed_paths"]))
         result["execution_evidence"] = build_execution_receipt(
             root=workspace.path,
             argv=argv,
@@ -725,14 +744,23 @@ def run_command(request: RunRequest, config_path: Path) -> dict[str, Any]:
         if _path_escapes_workspace(workspace_path, arg):
             raise BridgeError(f"path escapes workspace: {arg}")
 
-    return _execute_argv(
+    from execution_evidence import ExecutionHistory
+    history = ExecutionHistory(Path(__file__).resolve().parent / "state", workspace.name, request.argv)
+    result = _execute_argv(
         workspace=workspace,
         argv=request.argv,
         timeout_seconds=request.timeout_seconds,
         config_path=config_path,
         task_id=request.task_id,
         capture_mutation=capture_mutation,
+        history=history,
     )
+    evidence = result.get("execution_evidence") or {}
+    if "command_hash" in evidence:
+        result["execution_history"] = history.finalize(
+            Path(__file__).resolve().parent / "state", evidence
+        )
+    return result
 
 
 def run_sequence(request: RunSequenceRequest, config_path: Path) -> dict[str, Any]:
@@ -741,6 +769,7 @@ def run_sequence(request: RunSequenceRequest, config_path: Path) -> dict[str, An
 
     results: list[dict[str, Any]] = []
     stopped_at: int | None = None
+    history: Any = None
 
     for index, step in enumerate(request.commands, start=1):
         allowed, reason = _command_allowed(step.argv, workspace_path)
@@ -756,6 +785,10 @@ def run_sequence(request: RunSequenceRequest, config_path: Path) -> dict[str, An
             if _path_escapes_workspace(workspace_path, arg):
                 raise BridgeError(f"path escapes workspace: {arg}")
 
+        if history is None:
+            from execution_evidence import ExecutionHistory
+            history = ExecutionHistory(Path(__file__).resolve().parent / "state", workspace.name, step.argv)
+
         step_result = _execute_argv(
             workspace=workspace,
             argv=step.argv,
@@ -763,6 +796,7 @@ def run_sequence(request: RunSequenceRequest, config_path: Path) -> dict[str, An
             config_path=config_path,
             task_id=request.task_id,
             capture_mutation=capture_mutation,
+            history=history,
         )
         step_result["index"] = index
         step_result["step_id"] = step.step_id
@@ -775,7 +809,7 @@ def run_sequence(request: RunSequenceRequest, config_path: Path) -> dict[str, An
 
     status = "completed" if stopped_at is None else "failed"
 
-    return {
+    response = {
         "status": status,
         "workspace": workspace.name,
         "cwd": f"<workspace:{workspace.name}>",
@@ -783,6 +817,18 @@ def run_sequence(request: RunSequenceRequest, config_path: Path) -> dict[str, An
         "stopped_at": stopped_at,
         "commands": results,
     }
+
+    if history is not None:
+        last_evidence = next(
+            (r.get("execution_evidence") for r in reversed(results)
+             if isinstance(r.get("execution_evidence"), dict) and "command_hash" in r["execution_evidence"]),
+            None,
+        )
+        if last_evidence:
+            response["execution_history"] = history.finalize(
+                Path(__file__).resolve().parent / "state", last_evidence
+            )
+    return response
 
 
 def command_history(config_path: Path, *, limit: int = 50, workspace: str | None = None) -> dict[str, Any]:
