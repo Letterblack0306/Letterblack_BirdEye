@@ -603,6 +603,8 @@ def _execute_argv(
     task_id: str | None = None,
     capture_mutation: bool = False,
 ) -> dict[str, Any]:
+    from execution_evidence import build_execution_receipt, capture_diff_state, empty_diff_state
+
     started_at = utc_now()
     started = time.monotonic()
     head_before = None
@@ -612,6 +614,7 @@ def _execute_argv(
     if capture_mutation:
         head_before, head_ok = _git_head(workspace.path)
 
+    diff_before = capture_diff_state(workspace.path)
     env = os.environ.copy()
     env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 
@@ -669,6 +672,24 @@ def _execute_argv(
     if capture_mutation:
         result["before"] = {"head": head_before, "head_available": head_ok}
         result["after"] = {"head": head_after, "head_available": head_ok and head_after is not None}
+
+    try:
+        diff_after = capture_diff_state(workspace.path)
+        result["execution_evidence"] = build_execution_receipt(
+            root=workspace.path,
+            argv=argv,
+            exit_code=exit_code,
+            timed_out=timed_out,
+            stdout=stdout or "",
+            stderr=stderr or "",
+            started_at=started_at,
+            completed_at=result["completed_at"],
+            elapsed_seconds=elapsed,
+            before=diff_before if diff_before.get("is_repository") else empty_diff_state(),
+            after=diff_after if diff_after.get("is_repository") else empty_diff_state(),
+        )
+    except (OSError, ValueError) as exc:
+        result["execution_evidence"] = {"error": f"EVIDENCE_CAPTURE_FAILED: {exc}"}
 
     _append_journal(
         config_path,
