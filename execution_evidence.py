@@ -42,6 +42,7 @@ def _git(root: Path, *args: str, timeout: int = 30) -> tuple[int, str]:
     try:
         completed = subprocess.run(
             ["git", "-C", str(root), *args],
+            cwd=str(root),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
