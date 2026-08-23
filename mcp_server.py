@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -182,6 +183,56 @@ _WORKSPACE_COMMAND_HISTORY_SCHEMA = {
     },
 }
 
+# GPT-Knowledge is the single source of truth for project -> local-path mapping.
+_LOCAL_PROJECTS_RELPATH = "project-engineering/projects/workspace/local-projects.json"
+
+_LOCAL_PROJECTS_SCHEMA = {
+    "name": "local_projects",
+    "description": "Resolve GPT-Knowledge project IDs to machine-local workspace paths from project-engineering/projects/workspace/local-projects.json (validated against the filesystem). Read-only.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "project": {"type": "string", "description": "Optional single project ID to resolve (e.g. brew). Omit to return all mappings."}
+        },
+        "required": [],
+    },
+}
+
+
+def _gpt_knowledge_root(ctx):
+    for item in ctx.roots:
+        if item.name == "gpt-knowledge" or "gpt-knowledge" in Path(str(item.path)).name.lower():
+            return Path(str(item.path))
+    raise ValueError("gpt-knowledge knowledge root is not configured")
+
+
+def local_projects(project: str | None = None) -> dict[str, Any]:
+    ctx = _load_ctx()
+    mapping_file = _gpt_knowledge_root(ctx) / _LOCAL_PROJECTS_RELPATH.replace("/", os.sep)
+    if not mapping_file.is_file():
+        return {"ok": False, "error": "MAPPING_NOT_FOUND", "message": str(mapping_file)}
+    data = json.loads(mapping_file.read_text(encoding="utf-8"))
+    projects = data.get("projects", {})
+    wanted = {project} if project else set(projects)
+    unknown = sorted(wanted - set(projects))
+    resolved = {}
+    for pid in sorted(wanted & set(projects)):
+        raw = projects[pid].get("local_path", "")
+        path = Path(raw)
+        resolved[pid] = {
+            "local_path": raw,
+            "exists": path.is_dir(),
+            "root_class": "workspace",
+        }
+    return {
+        "ok": True,
+        "source": "GPT-Knowledge:" + _LOCAL_PROJECTS_RELPATH,
+        "authority": "current_workspace_mapping",
+        "unknown_project_ids": unknown,
+        "projects": resolved,
+    }
+
+
 _TOOL_DEFINITIONS = [
     _KNOWLEDGE_ROUTE_SCHEMA,
     _KNOWLEDGE_READ_SCHEMA,
@@ -194,6 +245,7 @@ _TOOL_DEFINITIONS = [
     _WORKSPACE_RUN_SCHEMA,
     _WORKSPACE_RUN_SEQUENCE_SCHEMA,
     _WORKSPACE_COMMAND_HISTORY_SCHEMA,
+    _LOCAL_PROJECTS_SCHEMA,
 ]
 
 _TOOL_REGISTRY = {
@@ -208,6 +260,7 @@ _TOOL_REGISTRY = {
     "workspace_run": ("workspace", "argv", "timeout_seconds", "request_id", "task_id"),
     "workspace_run_sequence": ("workspace", "commands", "stop_on_failure", "request_id", "task_id"),
     "workspace_command_history": ("limit", "workspace"),
+    "local_projects": ("project",),
 }
 
 
@@ -302,6 +355,8 @@ def invoke(tool: str, params: dict[str, Any]) -> dict[str, Any]:
             limit = int(params.get("limit", 50))
             limit = max(1, min(limit, 200))
             return command_history(CONFIG_PATH, limit=limit, workspace=params.get("workspace"))
+        if tool == "local_projects":
+            return local_projects(params.get("project"))
         return {
             "ok": False,
             "error": "unknown tool",
