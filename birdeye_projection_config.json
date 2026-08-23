@@ -57,6 +57,45 @@
       "statusDocument": "C:\\MCP Local\\GPT-Knowledge\\project-engineering\\projects\\memory\\status.json",
       "validationProfile": "default",
       "runtimeStatusSource": null
+    },
+    {
+      "projectId": "brew",
+      "projectName": "Brew",
+      "subtitle": "Creative Agent Runtime",
+      "workspaceId": "brew",
+      "localWorkspaceRoot": "G:\\Developments\\38_Brew_Creative_Agent",
+      "repository": null,
+      "branch": null,
+      "planDocument": "C:\\MCP Local\\GPT-Knowledge\\project-engineering\\projects\\brew\\plan.json",
+      "statusDocument": "C:\\MCP Local\\GPT-Knowledge\\project-engineering\\projects\\brew\\status.json",
+      "validationProfile": "default",
+      "runtimeStatusSource": null
+    },
+    {
+      "projectId": "adobe-ai-generations-release-hardening",
+      "projectName": "Adobe AI Generations",
+      "subtitle": "CEP Consolidation, Runtime, Release Hardening",
+      "workspaceId": "adobe-ai-generations-release-hardening",
+      "localWorkspaceRoot": null,
+      "repository": null,
+      "branch": null,
+      "planDocument": "C:\\MCP Local\\GPT-Knowledge\\project-engineering\\projects\\adobe-ai-generations-release-hardening\\plan.json",
+      "statusDocument": "C:\\MCP Local\\GPT-Knowledge\\project-engineering\\projects\\adobe-ai-generations-release-hardening\\status.json",
+      "validationProfile": "default",
+      "runtimeStatusSource": null
+    },
+    {
+      "projectId": "agent-harness-references",
+      "projectName": "Agent Harness References",
+      "subtitle": "DeepSeek, Config-Driven Harness Patterns",
+      "workspaceId": "agent-harness-references",
+      "localWorkspaceRoot": null,
+      "repository": null,
+      "branch": null,
+      "planDocument": "C:\\MCP Local\\GPT-Knowledge\\project-engineering\\projects\\agent-harness-reference\\plan.json",
+      "statusDocument": "C:\\MCP Local\\GPT-Knowledge\\project-engineering\\projects\\agent-harness-reference\\status.json",
+      "validationProfile": "default",
+      "runtimeStatusSource": null
     }
   ]
 }
