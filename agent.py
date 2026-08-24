@@ -85,6 +85,10 @@ _AUTHORIZED_PROGRESS_FIELDS: frozenset[str] = frozenset({
 })
 
 
+_ALLOWED_ROOT_CLASSES: frozenset[str] = frozenset({"workspace", "reference", "knowledge"})
+
+
+
 class GovernanceError(RuntimeError):
     pass
 
@@ -290,6 +294,13 @@ class Context:
             if not isinstance(item, dict):
                 raise GovernanceError("Each knowledge_roots entry must be an object")
             name = safe_root_name(str(item.get("name", "")))
+            root_class = str(item.get("root_class", "workspace") or "workspace").strip().lower()
+            if root_class not in _ALLOWED_ROOT_CLASSES:
+                raise GovernanceError(
+                    f"Knowledge root '{name}' has unsupported root_class '{root_class}' "
+                    f"(allowed: {', '.join(sorted(_ALLOWED_ROOT_CLASSES))})"
+                )
+
             if name == "lbe-reference":
                 raise GovernanceError(
                     "Knowledge root name 'lbe-reference' is reserved for bundled references"
@@ -305,7 +316,7 @@ class Context:
                 raise GovernanceError(f"Duplicate knowledge root path: {path}")
             if not path.exists() or not path.is_dir():
                 raise FileNotFoundError(f"Knowledge root does not exist: {path}")
-            roots.append(KnowledgeRoot(name, path, "workspace"))
+            roots.append(KnowledgeRoot(name, path, root_class))
             names.add(name)
             paths.add(key)
 
@@ -584,6 +595,86 @@ def update_run(
             stats.current_root, stats.current_file, error, run_id,
         ),
     )
+
+
+
+def index_file_event(
+    ctx: Context,
+    root: KnowledgeRoot,
+    physical_path: Path,
+    virtual: str,
+    *,
+    run_id: str,
+    deleted: bool = False,
+) -> dict[str, Any]:
+    """Incrementally update a single file row in the live SQLite index.
+
+    The live filesystem watcher calls this so workspace.db stays current
+    without a full re-scan. It reuses the same files table and write path as
+    trace_workspace -- there is no second index and no second write authority.
+    """
+    if deleted:
+        connection = open_database()
+        try:
+            connection.execute(
+                "DELETE FROM files WHERE root=? AND path=?", (root.name, virtual)
+            )
+            connection.commit()
+            return {"ok": True, "action": "deleted", "root": root.name, "path": virtual}
+        finally:
+            connection.close()
+
+    max_bytes = int(ctx.config.get("max_file_bytes", 5_000_000))
+    try:
+        stat = physical_path.stat()
+    except (OSError, PermissionError):
+        return {"ok": False, "action": "unreadable", "root": root.name, "path": virtual}
+    size = int(stat.st_size)
+    modified_ns = int(stat.st_mtime_ns)
+    file_hash: str | None = None
+    status = "unhashed"
+    error: str | None = None
+    if size > max_bytes:
+        status = "too_large"
+    else:
+        try:
+            file_hash = sha256_file(physical_path)
+            status = "hashed"
+        except (OSError, PermissionError) as exc:
+            status = "unreadable"
+            error = f"{type(exc).__name__}: {exc}"
+
+    now = utc_now()
+    connection = open_database()
+    try:
+        connection.execute(
+            """
+            INSERT INTO files(
+                root,path,physical_path,size,modified_ns,sha256,hash_status,error,
+                first_seen_at,last_seen_at,last_seen_run
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(root,path) DO UPDATE SET
+                physical_path=excluded.physical_path,
+                size=excluded.size,
+                modified_ns=excluded.modified_ns,
+                sha256=excluded.sha256,
+                hash_status=excluded.hash_status,
+                error=excluded.error,
+                last_seen_at=excluded.last_seen_at,
+                last_seen_run=excluded.last_seen_run
+            """,
+            (
+                root.name, virtual, str(physical_path), size, modified_ns, file_hash,
+                status, error, now, now, run_id,
+            ),
+        )
+        connection.commit()
+        return {
+            "ok": True, "action": "upserted", "root": root.name, "path": virtual,
+            "hash_status": status,
+        }
+    finally:
+        connection.close()
 
 
 def trace_workspace(
@@ -963,7 +1054,12 @@ def search_workspace(
 
             # Source classification for noise deprioritization.
             classification, penalty = _classify_source(virtual)
-            if root is not None and root.root_class == "reference":
+            if root is not None and root.root_class == "knowledge":
+                # GPT-Knowledge material is methodology / decision guidance, not
+                # workspace source. Tag it explicitly so knowledge can never
+                # masquerade as evidence about the active project.
+                classification = "knowledge"
+            elif root is not None and root.root_class == "reference":
                 metadata_parse_status, gallery_metadata = reference_metadata(physical, content)
                 # Bundled YAML support files are indexed as raw evidence, but only
                 # gallery records participate in reference-pattern retrieval.
