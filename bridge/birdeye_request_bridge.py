@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import sqlite3
@@ -133,9 +134,11 @@ class Workspace:
 
 
 class RequestBridge:
+    MAX_FILE_STATE_PATHS = 100
     ALLOWED_OPERATIONS = {
         "workspace_status",
         "workspace_diagnosis",
+        "workspace_file_state",
         "git_compare",
         "run_validation_profile",
         "refresh_index",
@@ -225,6 +228,114 @@ class RequestBridge:
                     break
             return result
 
+    def _indexed_file(self, workspace: Workspace, relative_path: str) -> bool | None:
+        database = workspace.database
+        if database is None or not database.exists():
+            return None
+        normalized = relative_path.replace("\\", "/")
+        with sqlite3.connect(database) as connection:
+            tables = {
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            for table in ("files", "workspace_files", "indexed_files"):
+                if table not in tables:
+                    continue
+                columns = {
+                    row[1]
+                    for row in connection.execute(f'PRAGMA table_info("{table}")')
+                }
+                for column in ("relative_path", "path", "file_path", "filepath", "full_path"):
+                    if column not in columns:
+                        continue
+                    row = connection.execute(
+                        f'SELECT 1 FROM "{table}" WHERE REPLACE("{column}", "\\", "/") = ? LIMIT 1',
+                        (normalized,),
+                    ).fetchone()
+                    if row is not None:
+                        return True
+            return False
+
+    def _resolve_file_state_paths(self, workspace: Workspace, scope: dict[str, Any]) -> list[tuple[str, Path]]:
+        requested = scope.get("files")
+        if not isinstance(requested, list) or not requested:
+            raise BridgeError("workspace_file_state requires scope.files")
+        if len(requested) > self.MAX_FILE_STATE_PATHS:
+            raise BridgeError(
+                f"workspace_file_state supports at most {self.MAX_FILE_STATE_PATHS} files"
+            )
+        resolved: list[tuple[str, Path]] = []
+        seen: set[str] = set()
+        for raw in requested:
+            if not isinstance(raw, str) or not raw.strip():
+                raise BridgeError("workspace_file_state paths must be non-empty strings")
+            candidate_input = Path(raw)
+            if candidate_input.is_absolute():
+                raise BridgeError("workspace_file_state paths must be workspace-relative")
+            candidate = (workspace.root / candidate_input).resolve()
+            try:
+                relative = candidate.relative_to(workspace.root).as_posix()
+            except ValueError as exc:
+                raise BridgeError(f"workspace_file_state path outside workspace: {raw}") from exc
+            if relative in seen:
+                continue
+            seen.add(relative)
+            resolved.append((relative, candidate))
+        return resolved
+
+    def _file_git_status(self, workspace: Workspace, relative_path: str) -> str:
+        result = run_command(
+            ["git", "status", "--porcelain=v1", "--untracked-files=all", "--", relative_path],
+            workspace.root,
+        )
+        if result["exitCode"] != 0:
+            return "UNAVAILABLE"
+        line = next((line for line in result["stdout"].splitlines() if line.strip()), "")
+        return line[:2] if line else "CLEAN"
+
+    def _workspace_file_state(self, workspace: Workspace, scope: dict[str, Any]) -> dict[str, Any]:
+        observed_at = utc_now()
+        files: list[dict[str, Any]] = []
+        for relative, candidate in self._resolve_file_state_paths(workspace, scope):
+            if not candidate.exists():
+                files.append(
+                    {
+                        "path": relative,
+                        "state": "MISSING",
+                        "sha256": None,
+                        "size": None,
+                        "mtime": None,
+                        "gitStatus": self._file_git_status(workspace, relative),
+                        "indexed": self._indexed_file(workspace, relative),
+                    }
+                )
+                continue
+            if not candidate.is_file():
+                raise BridgeError(f"workspace_file_state path is not a regular file: {relative}")
+            digest = hashlib.sha256()
+            with candidate.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            stat = candidate.stat()
+            files.append(
+                {
+                    "path": relative,
+                    "state": "PRESENT",
+                    "sha256": digest.hexdigest(),
+                    "size": stat.st_size,
+                    "mtime": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                    "gitStatus": self._file_git_status(workspace, relative),
+                    "indexed": self._indexed_file(workspace, relative),
+                }
+            )
+        head = run_command(["git", "rev-parse", "HEAD"], workspace.root)
+        return {
+            "workspaceId": workspace.workspace_id,
+            "sourceHead": head["stdout"].strip() if head["exitCode"] == 0 else None,
+            "observedAt": observed_at,
+            "files": files,
+        }
+
     def _run_profile(self, workspace: Workspace, profile: str) -> list[dict[str, Any]]:
         commands = workspace.validation_profiles.get(profile)
         if commands is None:
@@ -254,6 +365,8 @@ class RequestBridge:
             "index": self._index_status(workspace),
         }
         scope = request.get("scope") if isinstance(request.get("scope"), dict) else {}
+        if operation == "workspace_file_state":
+            result["fileState"] = self._workspace_file_state(workspace, scope)
         if operation in {"workspace_diagnosis", "run_validation_profile"}:
             profile = str(scope.get("validationProfile", "default"))
             checks = self._run_profile(workspace, profile)
