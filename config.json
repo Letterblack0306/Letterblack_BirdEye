@@ -9,6 +9,11 @@
       "name": "gpt-knowledge",
       "path": "C:\\MCP Local\\GPT-Knowledge",
       "root_class": "knowledge"
+    },
+    {
+      "name": "memory",
+      "path": "C:\\MCP Local\\Memory",
+      "root_class": "workspace"
     }
   ]
 }
