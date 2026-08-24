@@ -835,6 +835,7 @@ def trace_workspace(
         }
         write_json(SUMMARY_PATH, summary)
         update_run(connection, run_id, stats, final_status, completed_at)
+        connection.commit()
         write_json(PROGRESS_PATH, progress_payload(run_id, stats, final_status, reconciled, reconciliation_blocked_reason))
         print_progress(stats, newline=True)
         print("\nTrace completed successfully.")
