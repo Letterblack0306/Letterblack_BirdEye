@@ -162,6 +162,7 @@ def workspace_identity(workspace: str | None = None) -> dict[str, Any]:
             "root_class": root.root_class,
             "observed_at": observed_at,
             "git": {"is_repository": False},
+            "runtime_active": "unverified",
         }
 
     branch, head, detached = _branch_and_head(root_path)
@@ -214,6 +215,7 @@ def revision_status(workspace: str | None = None) -> dict[str, Any]:
             "workspace_root": str(root_path),
             "observed_at": observed_at,
             "git": {"is_repository": False},
+            "runtime_active": "unverified",
         }
 
     branch, head, detached = _branch_and_head(root_path)

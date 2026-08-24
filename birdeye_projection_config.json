@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "projection": {
+    "noWebhook": true,
+    "readOnly": true,
+    "noNewRuntimeAuthority": true
+  },
+  "projects": [
+    {
+      "projectId": "access-browser-agent",
+      "projectName": "Access Browser Agent",
+      "subtitle": "Browser Conversation Runtime",
+      "workspaceId": "access-browser-agent",
+      "localWorkspaceRoot": "G:\\Developments\\46_Accecc_Browser_Agent\\Browser Agent",
+      "repository": "Letterblack0306/access-browser-agent",
+      "branch": "main",
+      "planDocument": "C:\\MCP Local\\GPT-Knowledge\\project-engineering\\projects\\access-browser-agent-plan\\plan.json",
+      "statusDocument": "C:\\MCP Local\\GPT-Knowledge\\project-engineering\\projects\\access-browser-agent-plan\\status.json",
+      "validationProfile": "default",
+      "runtimeStatusSource": "C:\\Users\\prave\\.gpt-knowledge\\runtime\\access-browser-agent\\state.json"
+    },
+    {
+      "projectId": "lbe",
+      "projectName": "LBE",
+      "subtitle": "Persistent Agent Runtime",
+      "workspaceId": "lbe",
+      "localWorkspaceRoot": "C:\\Users\\prave\\source-repo",
+      "repository": "Letterblack0306/LetterBlack-LBE-Core",
+      "branch": "main",
+      "planDocument": "C:\\MCP Local\\GPT-Knowledge\\project-engineering\\projects\\lbe-plan-canvas\\plan.json",
+      "statusDocument": "C:\\MCP Local\\GPT-Knowledge\\project-engineering\\projects\\lbe-plan-canvas\\status.json",
+      "validationProfile": "default",
+      "runtimeStatusSource": null
+    },
+    {
+      "projectId": "looptool",
+      "projectName": "LoopTool",
+      "subtitle": "Local Execution & Evidence Bridge",
+      "workspaceId": "looptool",
+      "localWorkspaceRoot": null,
+      "repository": null,
+      "branch": null,
+      "planDocument": "C:\\MCP Local\\GPT-Knowledge\\project-engineering\\projects\\looptool\\plan.json",
+      "statusDocument": "C:\\MCP Local\\GPT-Knowledge\\project-engineering\\projects\\looptool\\status.json",
+      "validationProfile": "default",
+      "runtimeStatusSource": null
+    },
+    {
+      "projectId": "memory",
+      "projectName": "Historical Memory",
+      "subtitle": "ChatGPT Archive to Agent Memory MCP",
+      "workspaceId": "memory",
+      "localWorkspaceRoot": null,
+      "repository": null,
+      "branch": null,
+      "planDocument": "C:\\MCP Local\\GPT-Knowledge\\project-engineering\\projects\\memory\\plan.json",
+      "statusDocument": "C:\\MCP Local\\GPT-Knowledge\\project-engineering\\projects\\memory\\status.json",
+      "validationProfile": "default",
+      "runtimeStatusSource": null
+    },
+    {
+      "projectId": "brew",
+      "projectName": "Brew",
+      "subtitle": "Creative Agent Runtime",
+      "workspaceId": "brew",
+      "localWorkspaceRoot": "G:\\Developments\\38_Brew_Creative_Agent",
+      "repository": null,
+      "branch": null,
+      "planDocument": "C:\\MCP Local\\GPT-Knowledge\\project-engineering\\projects\\brew\\plan.json",
+      "statusDocument": "C:\\MCP Local\\GPT-Knowledge\\project-engineering\\projects\\brew\\status.json",
+      "validationProfile": "default",
+      "runtimeStatusSource": null
+    },
+    {
+      "projectId": "adobe-ai-generations-release-hardening",
+      "projectName": "Adobe AI Generations",
+      "subtitle": "CEP Consolidation, Runtime, Release Hardening",
+      "workspaceId": "adobe-ai-generations-release-hardening",
+      "localWorkspaceRoot": null,
+      "repository": null,
+      "branch": null,
+      "planDocument": "C:\\MCP Local\\GPT-Knowledge\\project-engineering\\projects\\adobe-ai-generations-release-hardening\\plan.json",
+      "statusDocument": "C:\\MCP Local\\GPT-Knowledge\\project-engineering\\projects\\adobe-ai-generations-release-hardening\\status.json",
+      "validationProfile": "default",
+      "runtimeStatusSource": null
+    },
+    {
+      "projectId": "agent-harness-references",
+      "projectName": "Agent Harness References",
+      "subtitle": "DeepSeek, Config-Driven Harness Patterns",
+      "workspaceId": "agent-harness-references",
+      "localWorkspaceRoot": null,
+      "repository": null,
+      "branch": null,
+      "planDocument": "C:\\MCP Local\\GPT-Knowledge\\project-engineering\\projects\\agent-harness-reference\\plan.json",
+      "statusDocument": "C:\\MCP Local\\GPT-Knowledge\\project-engineering\\projects\\agent-harness-reference\\status.json",
+      "validationProfile": "default",
+      "runtimeStatusSource": null
+    }
+  ]
+}
