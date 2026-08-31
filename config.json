@@ -1,19 +1,363 @@
 {
-  "knowledge_roots": [
+  "schema_version": 2,
+  "indexes": {
+    "shared_vector": {
+      "path": "C:\\MCP Local\\Letterblack_BirdEye\\state\\vectors\\semantic.db",
+      "gitignored": true,
+      "namespaces": ["memory", "skills"]
+    }
+  },
+  "roots": [
     {
-      "name": "access-browser-agent",
-      "path": "G:\\Developments\\46_Accecc_Browser_Agent\\Browser Agent",
-      "root_class": "workspace"
+      "id": "access-browser-agent",
+      "path": "G:\\Developments\\46_Accecc_Browser_Agent",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": true,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
     },
     {
-      "name": "gpt-knowledge",
+      "id": "gpt-knowledge",
       "path": "C:\\MCP Local\\GPT-Knowledge",
-      "root_class": "knowledge"
+      "class": "knowledge",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": true,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
     },
     {
-      "name": "memory",
+      "id": "memory",
       "path": "C:\\MCP Local\\Memory",
-      "root_class": "workspace"
+      "class": "memory",
+      "source_class": "historical-memory",
+      "authority": "historical",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": true,
+      "exclusions": [".git", "vectors", "__pycache__", ".pytest_cache"],
+      "sources": [
+        {"id": "chatgpt", "path": "C:\\MCP Local\\Chat_Dataexported\\GPT_Data", "source_class": "conversation-export", "agent": "chatgpt"},
+        {"id": "cline", "path": "C:\\Users\\prave\\.cline\\data\\sessions", "source_class": "agent-session", "agent": "cline"},
+        {"id": "codex", "path": "C:\\Users\\prave\\.codex\\sessions", "source_class": "agent-session", "agent": "codex"},
+        {"id": "claude", "path": "C:\\Users\\prave\\.claude\\sessions", "source_class": "agent-session", "agent": "claude"},
+        {"id": "gemini", "path": "C:\\Users\\prave\\.gemini\\history", "source_class": "agent-session", "agent": "gemini"},
+        {"id": "antigravity", "path": "C:\\Users\\prave\\.gemini\\antigravity", "source_class": "agent-runtime", "agent": "antigravity"},
+        {"id": "birdeye", "path": "C:\\MCP Local\\Letterblack_BirdEye\\state\\executions", "source_class": "agent-runtime", "agent": "birdeye"}
+      ]
+    },
+    {
+      "id": "skills",
+      "path": "C:\\MCP Local\\Skills\\curated",
+      "class": "knowledge",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage", ".pytest_cache"]
+    },
+    {
+      "id": "mcp-servers",
+      "path": "C:\\MCP Local\\servers",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": []
+    },
+    {
+      "id": "agents-memory-tool-v6-integration",
+      "path": "C:\\Agents-Memory-Tool-v6-integration",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": true,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "lbe-tui-lab",
+      "path": "C:\\LBE-TUI-Lab",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": true,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "cep-developer",
+      "path": "G:\\Developments\\00_CEP_Developer",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "letterblack-genedit-1",
+      "path": "G:\\Developments\\00LETTERBLACK_GenEdit_1",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "alexa-bridge",
+      "path": "G:\\Developments\\03_Alexa bridge",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "aep-window-view",
+      "path": "G:\\Developments\\06_aep_window_view",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": true,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "letterblack-portal",
+      "path": "G:\\Developments\\11_Letterblack_PORTAL",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "adobe-ai-extension",
+      "path": "G:\\Developments\\13_Adobe AI extention",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "ai-ae",
+      "path": "G:\\Developments\\15_AI_AE",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "ae-gpt-compare-dev",
+      "path": "G:\\Developments\\16_AE_GPT_Compair&Dev",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "copycodepro",
+      "path": "G:\\Developments\\19_Copycodepro",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "ae-vfx-visualizer",
+      "path": "G:\\Developments\\20_AE VFX Visualizer",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "blendvisualtest",
+      "path": "G:\\Developments\\21_blendvisualtest",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "carscanner",
+      "path": "G:\\Developments\\21_Carscanner",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "whiteboard",
+      "path": "G:\\Developments\\23_whiteboard",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "bodymovin-aep",
+      "path": "G:\\Developments\\24_Bodymovin_AEP",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "extension-agent",
+      "path": "G:\\Developments\\25_Extention agent",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "nodebased-agent",
+      "path": "G:\\Developments\\27_Nodebased agent",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "folder-open",
+      "path": "G:\\Developments\\28_folder open",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "veo-jason-gen-ai",
+      "path": "G:\\Developments\\32_Veo_Jason_Gen_AI",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": true,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "aep-nodes",
+      "path": "G:\\Developments\\33_AEP_Nodes",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "gpt",
+      "path": "G:\\Developments\\34_GPT",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "macos",
+      "path": "G:\\Developments\\35_MacOs",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "cardflow",
+      "path": "G:\\Developments\\36_Cardflow",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": true,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "aep-phone-viewer",
+      "path": "G:\\Developments\\37_AEP Phone viewer",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "brew-creative-agent",
+      "path": "G:\\Developments\\38_Brew_Creative_Agent",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "aep-letterblack-genai",
+      "path": "G:\\Developments\\40_AEP_Letterblack_GenAI",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "lbe-core-clean",
+      "path": "G:\\Developments\\42_LBE_Core_Clean",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": true,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
+    },
+    {
+      "id": "workspace-command",
+      "path": "G:\\Developments\\44_Workspace_command",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
+      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
     }
   ]
 }

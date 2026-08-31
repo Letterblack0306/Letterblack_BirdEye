@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import re
+import sqlite3
 import sys
+import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +28,21 @@ from workspace_identity import revision_status, workspace_identity
 
 BIRDEYE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BIRDEYE_DIR / "config.json"
+MEMORY_ROOT = Path(r"C:\MCP Local\Memory")
+SHARED_VECTOR_INDEX = BIRDEYE_DIR / "state" / "vectors" / "semantic.db"
+SKILLS_ROOT = Path(os.environ.get("SKILLS_ROOT", "C:/MCP Local/Skills/curated")).resolve()
+
+_memory_service = None
+_memory_import_error: Exception | None = None
+
+try:
+    if str(MEMORY_ROOT / "src") not in sys.path:
+        sys.path.insert(0, str(MEMORY_ROOT / "src"))
+    from memory.api import MemoryApiError, MemoryService
+except ImportError as exc:
+    MemoryApiError = RuntimeError  # type: ignore[misc,assignment]
+    MemoryService = None  # type: ignore[assignment,misc]
+    _memory_import_error = exc
 
 try:
     from agent import Context, GovernanceError, database_status, inspect_file, load_json, search_workspace
@@ -73,6 +94,8 @@ _BIRDEYE_SEARCH_SCHEMA = {
             "max_results": {"type": "integer", "minimum": 1, "maximum": 200},
             "extensions": {"type": "string", "description": "Optional comma-separated file extensions to restrict."},
             "roots": {"type": "string", "description": "Optional comma-separated root names to restrict."},
+            "path_prefix": {"type": "string", "description": "Optional relative path prefix within each selected root, such as runtime/ or src/system/."},
+            "verify_freshness": {"type": "boolean", "description": "When true, compare current file metadata and refresh changed candidates before matching."},
         },
         "required": ["query"],
     },
@@ -92,7 +115,7 @@ _BIRDEYE_INSPECT_SCHEMA = {
 
 _BIRDEYE_ROOTS_SCHEMA = {
     "name": "birdeye_roots",
-    "description": "List configured knowledge roots with their root_class trust label.",
+    "description": "List shared BirdEye capability roots for skills, memory, GPT-Knowledge, and workspaces with root_class trust labels.",
     "inputSchema": {"type": "object", "properties": {}, "required": []},
 }
 
@@ -100,6 +123,122 @@ _BIRDEYE_STATUS_SCHEMA = {
     "name": "birdeye_status",
     "description": "SQLite index health for the shared state/workspace.db.",
     "inputSchema": {"type": "object", "properties": {}, "required": []},
+}
+
+_MEMORY_RECALL_SCHEMA = {
+    "name": "memory_recall",
+    "description": "Recall historical evidence and derived memory for a topic through BirdEye's shared Memory service. Results include provenance and authority labels.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "k": {"type": "integer", "minimum": 1, "maximum": 100},
+            "include_reasoning": {"type": "boolean"},
+        },
+        "required": ["query"],
+    },
+}
+
+_MEMORY_SEARCH_SCHEMA = {
+    "name": "memory_search",
+    "description": "Search historical Memory through hybrid, semantic, text, phrase, identifier, or title retrieval modes via BirdEye.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "mode": {"type": "string", "enum": ["hybrid", "semantic", "text", "phrase", "identifier", "title"]},
+            "k": {"type": "integer", "minimum": 1, "maximum": 100},
+            "include_reasoning": {"type": "boolean"},
+            "conversation_id": {"type": "string"},
+        },
+        "required": ["query"],
+    },
+}
+
+_SKILLS_SCHEMA = {
+    "name": "skills",
+    "description": "Single consolidated skills tool backed by one shared index. Use operation=query for bounded relevant sections, fetch only when the complete file is explicitly needed, or status. Agent-specific skill sets are not supported.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "operation": {"type": "string", "enum": ["query", "fetch", "status"]},
+            "query": {"type": "string"},
+            "requested_intent": {"type": "string", "description": "Optional caller-stated intent recorded in query telemetry; it does not change retrieval behavior."},
+            "prefix": {"type": "string"},
+            "rel": {"type": "string"},
+            "max_results": {"type": "integer", "minimum": 1, "maximum": 50},
+            "chunk_chars": {"type": "integer", "minimum": 200, "maximum": 12000},
+            "max_bytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
+        },
+        "required": [],
+    },
+}
+
+_MEMORY_TIMELINE_SCHEMA = {
+    "name": "memory_timeline",
+    "description": "Return the chronological canonical message timeline for a historical conversation through BirdEye.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "conversation_id": {"type": "string"},
+            "include_reasoning": {"type": "boolean"},
+        },
+        "required": ["conversation_id"],
+    },
+}
+
+_MEMORY_CONVERSATION_SCHEMA = {
+    "name": "memory_conversation",
+    "description": "Return a full canonical historical conversation and its derived memory through BirdEye.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "conversation_id": {"type": "string"},
+            "include_reasoning": {"type": "boolean"},
+        },
+        "required": ["conversation_id"],
+    },
+}
+
+_MEMORY_MESSAGE_SCHEMA = {
+    "name": "memory_message",
+    "description": "Return one canonical historical message, attachments, derived memory, and provenance through BirdEye.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "conversation_id": {"type": "string"},
+            "node_id": {"type": "string"},
+        },
+        "required": ["conversation_id", "node_id"],
+    },
+}
+
+_MEMORY_RELATED_SCHEMA = {
+    "name": "memory_related",
+    "description": "Return related historical messages and derived memories for a conversation or message seed through BirdEye.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "conversation_id": {"type": "string"},
+            "node_id": {"type": "string"},
+            "k": {"type": "integer", "minimum": 1, "maximum": 100},
+        },
+        "required": ["conversation_id"],
+    },
+}
+
+_MEMORY_SOURCES_SCHEMA = {
+    "name": "memory_sources",
+    "description": "Resolve historical or derived Memory provenance through BirdEye without changing source records.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "conversation_id": {"type": "string"},
+            "node_id": {"type": "string"},
+            "memory_id": {"type": "string"},
+        },
+        "required": [],
+    },
 }
 
 _WORKSPACE_IDENTITY_SCHEMA = {
@@ -240,6 +379,14 @@ _TOOL_DEFINITIONS = [
     _BIRDEYE_INSPECT_SCHEMA,
     _BIRDEYE_ROOTS_SCHEMA,
     _BIRDEYE_STATUS_SCHEMA,
+    _MEMORY_RECALL_SCHEMA,
+    _MEMORY_SEARCH_SCHEMA,
+    _MEMORY_TIMELINE_SCHEMA,
+    _MEMORY_CONVERSATION_SCHEMA,
+    _MEMORY_MESSAGE_SCHEMA,
+    _MEMORY_RELATED_SCHEMA,
+    _MEMORY_SOURCES_SCHEMA,
+    _SKILLS_SCHEMA,
     _WORKSPACE_IDENTITY_SCHEMA,
     _REVISION_STATUS_SCHEMA,
     _WORKSPACE_RUN_SCHEMA,
@@ -251,10 +398,18 @@ _TOOL_DEFINITIONS = [
 _TOOL_REGISTRY = {
     "knowledge_route": ("task",),
     "knowledge_read": ("reference",),
-    "birdeye_search": ("query", "max_results", "extensions", "roots"),
+    "birdeye_search": ("query", "max_results", "extensions", "roots", "path_prefix", "verify_freshness"),
     "birdeye_inspect": ("path",),
     "birdeye_roots": (),
     "birdeye_status": (),
+    "memory_recall": ("query", "k", "include_reasoning"),
+    "memory_search": ("query", "mode", "k", "include_reasoning", "conversation_id"),
+    "memory_timeline": ("conversation_id", "include_reasoning"),
+    "memory_conversation": ("conversation_id", "include_reasoning"),
+    "memory_message": ("conversation_id", "node_id"),
+    "memory_related": ("conversation_id", "node_id", "k"),
+    "memory_sources": ("conversation_id", "node_id", "memory_id"),
+    "skills": ("operation", "prefix", "rel", "max_bytes"),
     "workspace_identity": ("workspace",),
     "revision_status": ("workspace",),
     "workspace_run": ("workspace", "argv", "timeout_seconds", "request_id", "task_id"),
@@ -268,6 +423,211 @@ def _load_ctx() -> "Context":
     if Context is None:
         raise GovernanceError("agent module is required")
     return Context.load()
+
+
+def _load_memory_service():
+    global _memory_service
+    if _memory_service is not None:
+        return _memory_service
+    if MemoryService is None:
+        detail = str(_memory_import_error) if _memory_import_error else "MemoryService import unavailable"
+        raise GovernanceError(f"shared Memory service unavailable: {detail}")
+    _memory_service = MemoryService(
+        canonical_db=str(MEMORY_ROOT / "memory.db"),
+        semantic_db=str(SHARED_VECTOR_INDEX),
+        derived_db=str(MEMORY_ROOT / "derived.db"),
+    )
+    return _memory_service
+
+
+def _memory_call(method: str, **params: Any) -> dict[str, Any]:
+    service = _load_memory_service()
+    try:
+        return getattr(service, method)(**params)
+    except MemoryApiError as exc:
+        raise GovernanceError(str(exc)) from exc
+
+
+def _skills_call(**params: Any) -> dict[str, Any]:
+    operation = str(params.get("operation", "query"))
+    if any(key in params for key in ("agent", "agent_id", "skill_set", "pinned_skills")):
+        raise GovernanceError("agent-specific skill sets are not supported")
+    if operation == "query":
+        return _skills_query(
+            str(params.get("query", "")),
+            str(params.get("prefix", "")),
+            int(params.get("max_results", 8)),
+            int(params.get("chunk_chars", 2400)),
+            str(params.get("requested_intent", "")),
+        )
+    if operation == "fetch":
+        return _skills_fetch(str(params.get("rel", "")), int(params.get("max_bytes", 65536)))
+    if operation == "status":
+        return _skills_status()
+    raise GovernanceError("operation must be one of: query, fetch, status")
+
+
+def _skills_db() -> sqlite3.Connection:
+    SHARED_VECTOR_INDEX.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(SHARED_VECTOR_INDEX))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS skill_files("
+        "namespace TEXT NOT NULL DEFAULT 'skills', rel_path TEXT NOT NULL,"
+        "size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL, sha256 TEXT NOT NULL,"
+        "indexed_at TEXT NOT NULL, PRIMARY KEY(namespace, rel_path))"
+    )
+    return conn
+
+
+def _skills_refresh() -> dict[str, Any]:
+    seen: set[str] = set()
+    hashed_now = reused = 0
+    conn = _skills_db()
+    try:
+        known = {
+            row[0]: (row[1], row[2], row[3])
+            for row in conn.execute(
+                "SELECT rel_path,size,mtime_ns,sha256 FROM skill_files WHERE namespace='skills'"
+            )
+        }
+        if SKILLS_ROOT.is_dir():
+            for path in SKILLS_ROOT.rglob("*"):
+                if not path.is_file():
+                    continue
+                rel = path.relative_to(SKILLS_ROOT).as_posix()
+                seen.add(rel)
+                stat = path.stat()
+                cached = known.get(rel)
+                if cached and cached[0] == stat.st_size and cached[1] == stat.st_mtime_ns:
+                    reused += 1
+                    continue
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                conn.execute(
+                    "INSERT OR REPLACE INTO skill_files(namespace,rel_path,size,mtime_ns,sha256,indexed_at) VALUES('skills',?,?,?,?,?)",
+                    (rel, stat.st_size, stat.st_mtime_ns, digest, datetime.now(timezone.utc).isoformat()),
+                )
+                hashed_now += 1
+        stale = set(known) - seen
+        conn.executemany(
+            "DELETE FROM skill_files WHERE namespace='skills' AND rel_path=?",
+            [(rel,) for rel in stale],
+        )
+        conn.commit()
+        total = conn.execute("SELECT count(*) FROM skill_files WHERE namespace='skills'").fetchone()[0]
+        return {
+            "root": str(SKILLS_ROOT), "namespace": "skills", "files_tracked": total,
+            "hashed_now": hashed_now, "reused_cache": reused, "pruned_stale": len(stale),
+            "index_path": str(SHARED_VECTOR_INDEX),
+            "index_scope": "all-skills-single-index",
+        }
+    finally:
+        conn.close()
+
+
+def _skills_safe_path(rel: str) -> Path:
+    root = SKILLS_ROOT
+    path = (root / rel.replace("\\", "/")).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise GovernanceError("skill path escapes the consolidated skills root") from exc
+    if not path.is_file():
+        raise GovernanceError("skill file not found")
+    return path
+
+
+def _skills_fetch(rel: str, max_bytes: int) -> dict[str, Any]:
+    _skills_refresh()
+    path = _skills_safe_path(rel)
+    data = path.read_bytes()
+    return {
+        "ok": True, "operation": "fetch", "namespace": "skills", "path": rel,
+        "content": data[:max_bytes].decode("utf-8", errors="replace"),
+        "size": len(data), "truncated": len(data) > max_bytes,
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "authority": "curated_knowledge_non_truth",
+    }
+
+
+def _skills_query(
+    query: str,
+    prefix: str,
+    max_results: int,
+    chunk_chars: int,
+    requested_intent: str = "",
+) -> dict[str, Any]:
+    if not query.strip():
+        raise GovernanceError("query is required for skills operation=query")
+    query_started = time.perf_counter()
+    query_id = str(uuid.uuid4())
+    _skills_refresh()
+    terms = [term for term in re.findall(r"[A-Za-z0-9_/-]+", query.lower()) if len(term) > 1]
+    conn = _skills_db()
+    candidates = []
+    try:
+        rows = conn.execute(
+            "SELECT rel_path,sha256 FROM skill_files WHERE namespace='skills' AND rel_path LIKE ? ORDER BY rel_path",
+            (prefix.replace("\\", "/") + "%",),
+        ).fetchall()
+    finally:
+        conn.close()
+    candidate_count = len(rows)
+    for rel, digest in rows:
+        text = _skills_safe_path(rel).read_text(encoding="utf-8", errors="replace")
+        lines = text.splitlines()
+        lines_per_chunk = max(1, chunk_chars // 80)
+        for start in range(0, len(lines), lines_per_chunk):
+            chunk = "\n".join(lines[start : start + lines_per_chunk])
+            lowered = chunk.lower()
+            score = sum(lowered.count(term) for term in terms)
+            if score:
+                candidates.append((score, rel, digest, start + 1, chunk[:chunk_chars]))
+    candidates.sort(key=lambda item: (-item[0], item[1], item[3]))
+    # Content identity is already supplied by the BirdEye SHA index. Collapse
+    # duplicate content after ranking so the preferred (highest score, then
+    # stable path/line) candidate is retained without changing authority.
+    deduplicated_candidates = []
+    seen_hashes: set[str] = set()
+    for candidate in candidates:
+        digest = candidate[2]
+        if digest in seen_hashes:
+            continue
+        seen_hashes.add(digest)
+        deduplicated_candidates.append(candidate)
+    deduplicated_count = len(candidates) - len(deduplicated_candidates)
+    bounded_results = deduplicated_candidates[:max_results]
+    duration_ms = round((time.perf_counter() - query_started) * 1000, 3)
+    return {
+        "ok": True, "operation": "query", "namespace": "skills", "query": query,
+        "results": [
+            {"path": rel, "sha256": digest, "start_line": line, "score": score, "section": chunk}
+            for score, rel, digest, line, chunk in bounded_results
+        ],
+        "result_count": len(bounded_results),
+        "total_matching_chunks": len(candidates),
+        "bounded": True,
+        "full_file_fallback": "Use operation=fetch with rel when the complete procedure is explicitly required.",
+        "authority": "curated_knowledge_non_truth",
+        "index_scope": "all-skills-single-index",
+        "telemetry": {
+            "query_id": query_id,
+            "requested_intent": requested_intent or None,
+            "selected_query_type": "lexical",
+            "root": "skills",
+            "path_scope": prefix.replace("\\", "/") or None,
+            "semantic_used": False,
+            "freshness_checked": False,
+            "results": len(bounded_results),
+            "fallback_used": False,
+            "duration_ms": duration_ms,
+            "candidate_count": candidate_count,
+            "deduplicated_count": deduplicated_count,
+        },
+    }
+
+
+def _skills_status() -> dict[str, Any]:
+    return {"ok": True, "operation": "status", **_skills_refresh(), "authority": "curated_knowledge_non_truth"}
 
 
 def _knowledge_root(ctx: "Context") -> Any:
@@ -336,6 +696,8 @@ def invoke(tool: str, params: dict[str, Any]) -> dict[str, Any]:
                 int(params.get("max_results", 25)),
                 params.get("extensions"),
                 params.get("roots"),
+                params.get("path_prefix"),
+                bool(params.get("verify_freshness", False)),
             )
         if tool == "birdeye_inspect":
             return birdeye_inspect(params.get("path", ""))
@@ -343,6 +705,56 @@ def invoke(tool: str, params: dict[str, Any]) -> dict[str, Any]:
             return birdeye_roots()
         if tool == "birdeye_status":
             return birdeye_status()
+        if tool == "memory_recall":
+            return _memory_call(
+                "recall",
+                query=params.get("query", ""),
+                k=int(params.get("k", 10)),
+                include_reasoning=bool(params.get("include_reasoning", False)),
+            )
+        if tool == "memory_search":
+            return _memory_call(
+                "search",
+                query=params.get("query", ""),
+                mode=params.get("mode", "hybrid"),
+                k=int(params.get("k", 10)),
+                include_reasoning=bool(params.get("include_reasoning", False)),
+                conversation_id=params.get("conversation_id"),
+            )
+        if tool == "memory_timeline":
+            return _memory_call(
+                "timeline",
+                conversation_id=params.get("conversation_id", ""),
+                include_reasoning=bool(params.get("include_reasoning", False)),
+            )
+        if tool == "memory_conversation":
+            return _memory_call(
+                "conversation",
+                conversation_id=params.get("conversation_id", ""),
+                include_reasoning=bool(params.get("include_reasoning", False)),
+            )
+        if tool == "memory_message":
+            return _memory_call(
+                "message",
+                conversation_id=params.get("conversation_id", ""),
+                node_id=params.get("node_id", ""),
+            )
+        if tool == "memory_related":
+            return _memory_call(
+                "related",
+                conversation_id=params.get("conversation_id", ""),
+                node_id=params.get("node_id"),
+                k=int(params.get("k", 5)),
+            )
+        if tool == "memory_sources":
+            return _memory_call(
+                "sources",
+                conversation_id=params.get("conversation_id"),
+                node_id=params.get("node_id"),
+                memory_id=params.get("memory_id"),
+            )
+        if tool == "skills":
+            return _skills_call(**params)
         if tool == "workspace_identity":
             return workspace_identity(params.get("workspace"))
         if tool == "revision_status":
@@ -428,13 +840,30 @@ def knowledge_read(reference: str) -> dict[str, Any]:
 
 def birdeye_roots() -> dict[str, Any]:
     ctx = _load_ctx()
-    return {
-        "ok": True,
-        "knowledge_roots": [
-            {"name": r.name, "path": str(r.path), "root_class": r.root_class}
+    status = database_status() if database_status is not None else {}
+    roots = status.get("roots")
+    if not isinstance(roots, list):
+        roots = [
+            {
+                "id": r.name,
+                "name": r.name,
+                "path": str(r.path),
+                "root_class": r.root_class,
+                "enabled": r.enabled,
+                "index_enabled": r.index_enabled,
+                "hash_policy": r.hash_policy,
+                "git_enabled": r.git_enabled,
+                "status": "UNAVAILABLE" if not r.path.exists() else "PARTIAL",
+            }
             for r in ctx.roots
-        ],
+        ]
+    capabilities = {
+        "skills": [root for root in roots if root.get("name") == "skills" or root.get("id") == "skills"],
+        "memory": [root for root in roots if root.get("root_class") == "memory" or root.get("name") == "memory" or root.get("id") == "memory"],
+        "workspace": [root for root in roots if root.get("root_class") == "workspace"],
+        "knowledge": [root for root in roots if root.get("root_class") == "knowledge"],
     }
+    return {"ok": True, "knowledge_roots": roots, "roots": roots, "capabilities": capabilities}
 
 
 def birdeye_status() -> dict[str, Any]:
@@ -446,7 +875,7 @@ def birdeye_status() -> dict[str, Any]:
         return {"ok": False, "error": type(exc).__name__, "message": str(exc)}
 
 
-def birdeye_search(query: str, max_results: int = 25, extensions: str | None = None, roots: str | None = None) -> dict[str, Any]:
+def birdeye_search(query: str, max_results: int = 25, extensions: str | None = None, roots: str | None = None, path_prefix: str | None = None, verify_freshness: bool = False) -> dict[str, Any]:
     if search_workspace is None:
         return {"ok": False, "error": "search_workspace unavailable"}
     try:
@@ -458,6 +887,8 @@ def birdeye_search(query: str, max_results: int = 25, extensions: str | None = N
             max_results=max(1, min(int(max_results), 200)),
             extensions=ext_list,
             roots=roots_list,
+            path_prefix=path_prefix,
+            verify_freshness=bool(verify_freshness),
         )
     except (GovernanceError, FileNotFoundError, OSError, ValueError) as exc:
         return {"ok": False, "error": type(exc).__name__, "message": str(exc)}
@@ -579,4 +1010,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

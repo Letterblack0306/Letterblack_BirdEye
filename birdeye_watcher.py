@@ -50,6 +50,14 @@ class _IndexHandler(FileSystemEventHandler):
             try:
                 relative = resolved.relative_to(root.path)
             except ValueError:
+                if root.root_class != "memory":
+                    continue
+                for source in root.sources:
+                    try:
+                        source_relative = resolved.relative_to(source.path)
+                    except ValueError:
+                        continue
+                    return root, Path("sources") / source.name / source_relative
                 continue
             return root, relative
         return None, None
