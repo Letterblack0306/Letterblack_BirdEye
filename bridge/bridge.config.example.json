@@ -6,7 +6,7 @@
   "tokenEnv": "BIRDEYE_GITHUB_TOKEN",
   "workspaces": {
     "access-browser-agent": {
-      "root": "G:\\Developments\\45_Accecc_Browser_Agent",
+      "root": "G:\\Developments\\46_Accecc_Browser_Agent",
       "database": "C:\\MCP Local\\Letterblack_BirdEye\\state\\workspace.db",
       "validationProfiles": {
         "default": [
@@ -34,6 +34,21 @@
         "default": [
           ["npm.cmd", "run", "check"]
         ]
+      }
+    }
+  },
+  "activityEvidence": {
+    "enabled": true,
+    "maxEvents": 80,
+    "maxFilesPerSource": 12,
+    "sources": {
+      "codex": {
+        "root": "%USERPROFILE%\\.codex",
+        "patterns": ["sessions/**/*.jsonl", "history.jsonl"]
+      },
+      "antigravity": {
+        "root": "%USERPROFILE%\\.gemini\\antigravity-cli",
+        "pattern": "log/cli-*.log"
       }
     }
   }

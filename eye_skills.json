@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "kind": "eye_skills",
+  "description": "EYES curated skills root and hash/index policy.",
+  "root": {
+    "id": "skills",
+    "path": "C:\\MCP Local\\Skills",
+    "class": "knowledge",
+    "enabled": true,
+    "index": true,
+    "hash": "sha256",
+    "git": false,
+    "exclusions": [
+      ".git",
+      ".pytest_cache",
+      "__pycache__",
+      "node_modules",
+      "dist",
+      "build",
+      "coverage"
+    ]
+  }
+}

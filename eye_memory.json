@@ -1,0 +1,66 @@
+{
+    "schema_version":  1,
+    "kind":  "eye_memory",
+    "description":  "EYES agent logs and historical memory sources. Source files remain canonical; only derived indexes are stored in BirdEye state.",
+    "root":  {
+                 "id":  "memory",
+                 "path":  "C:\\MCP Local\\Memory",
+                 "class":  "memory",
+                 "source_class":  "historical-memory",
+                 "authority":  "historical",
+                 "enabled":  true,
+                 "index":  true,
+                 "hash":  "sha256",
+                 "git":  true,
+                 "exclusions":  [
+                                    ".git",
+                                    "vectors",
+                                    "__pycache__",
+                                    ".pytest_cache"
+                                ],
+                 "sources":  [
+                                 {
+                                     "id":  "chatgpt",
+                                     "path":  "C:\\MCP Local\\Chat_Dataexported\\GPT_Data",
+                                     "source_class":  "conversation-export",
+                                     "agent":  "chatgpt"
+                                 },
+                                 {
+                                     "id":  "cline",
+                                     "path":  "C:\\Users\\prave\\.cline\\data\\sessions",
+                                     "source_class":  "agent-session",
+                                     "agent":  "cline"
+                                 },
+                                 {
+                                     "id":  "codex",
+                                     "path":  "C:\\Users\\prave\\.codex\\sessions",
+                                     "source_class":  "agent-session",
+                                     "agent":  "codex"
+                                 },
+                                 {
+                                     "id":  "claude",
+                                     "path":  "C:\\Users\\prave\\.claude\\sessions",
+                                     "source_class":  "agent-session",
+                                     "agent":  "claude"
+                                 },
+                                 {
+                                     "id":  "gemini",
+                                     "path":  "C:\\Users\\prave\\.gemini\\history",
+                                     "source_class":  "agent-session",
+                                     "agent":  "gemini"
+                                 },
+                                 {
+                                     "id":  "antigravity",
+                                     "path":  "C:\\Users\\prave\\.gemini\\antigravity",
+                                     "source_class":  "agent-runtime",
+                                     "agent":  "antigravity"
+                                 },
+                                 {
+                                     "id":  "birdeye",
+                                     "path":  "C:\\MCP Local\\Letterblack_BirdEye\\state\\executions",
+                                     "source_class":  "agent-runtime",
+                                     "agent":  "birdeye"
+                                 }
+                             ]
+             }
+}

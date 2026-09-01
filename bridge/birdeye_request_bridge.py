@@ -16,6 +16,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    from .activity_evidence import ActivityEvidenceCollector
+except ImportError:
+    from activity_evidence import ActivityEvidenceCollector
+
 
 class BridgeError(RuntimeError):
     pass
@@ -165,6 +170,8 @@ class RequestBridge:
                 Path(database).expanduser().resolve() if database else None,
                 profiles,
             )
+
+        self.activity_evidence = ActivityEvidenceCollector(config.get("activityEvidence"))
 
     def _validate_request(self, request: dict[str, Any]) -> Workspace:
         required = {"schemaVersion", "requestId", "createdAt", "expiresAt", "workspaceId", "operation"}
@@ -350,6 +357,22 @@ class RequestBridge:
                 break
         return results
 
+    def _activity_status(self, workspace: Workspace) -> dict[str, Any]:
+        try:
+            return self.activity_evidence.collect(workspace.root)
+        except Exception as exc:
+            return {
+                "schemaVersion": 1,
+                "enabled": True,
+                "authority": ActivityEvidenceCollector.AUTHORITY,
+                "evidenceLevel": ActivityEvidenceCollector.EVIDENCE_LEVEL,
+                "readOnly": True,
+                "observedAt": utc_now(),
+                "sources": [],
+                "events": [],
+                "error": str(exc),
+            }
+
     def process(self, request: dict[str, Any]) -> dict[str, Any]:
         workspace = self._validate_request(request)
         operation = str(request["operation"])
@@ -363,6 +386,7 @@ class RequestBridge:
             "completedAt": utc_now(),
             "git": self._git_status(workspace),
             "index": self._index_status(workspace),
+            "activityEvidence": self._activity_status(workspace),
         }
         scope = request.get("scope") if isinstance(request.get("scope"), dict) else {}
         if operation == "workspace_file_state":

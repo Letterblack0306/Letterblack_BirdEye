@@ -133,7 +133,8 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(item["path"], "src/demo.txt")
             self.assertEqual(item["state"], "PRESENT")
             self.assertEqual(
-                item["sha256"], hashlib.sha256(b"hello bird-eye\n").hexdigest()
+                item["sha256"],
+                hashlib.sha256(target.read_bytes()).hexdigest(),
             )
             self.assertEqual(item["gitStatus"], "CLEAN")
             self.assertIsNone(item["indexed"])

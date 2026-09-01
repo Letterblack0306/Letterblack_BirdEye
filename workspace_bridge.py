@@ -108,18 +108,24 @@ def load_workspaces(config_path: Path) -> tuple[Workspace, ...]:
     except json.JSONDecodeError as exc:
         raise BridgeError(f"Invalid BirdEye config JSON: {exc}") from exc
 
-    roots = config.get("knowledge_roots")
+    # The active BirdEye registry uses ``roots`` with ``id`` fields. Keep
+    # accepting the older ``knowledge_roots``/``name`` shape for compatibility.
+    roots = config.get("roots")
+    root_name_key = "id"
+    if roots is None:
+        roots = config.get("knowledge_roots")
+        root_name_key = "name"
     if not isinstance(roots, list) or not roots:
-        raise BridgeError("BirdEye config requires a non-empty knowledge_roots list")
+        raise BridgeError("BirdEye config requires a non-empty roots or knowledge_roots list")
 
     result: list[Workspace] = []
     seen_names: set[str] = set()
     seen_paths: set[str] = set()
     for item in roots:
         if not isinstance(item, dict):
-            raise BridgeError("Each knowledge_roots entry must be an object")
-        name = _required_text(item.get("name"), "knowledge_roots.name").strip().lower()
-        raw_path = _required_text(item.get("path"), f"knowledge_roots[{name}].path")
+            raise BridgeError("Each root entry must be an object")
+        name = _required_text(item.get(root_name_key), f"{root_name_key}").strip().lower()
+        raw_path = _required_text(item.get("path"), f"roots[{name}].path")
         path = Path(raw_path).expanduser().resolve()
         if not path.is_dir():
             raise BridgeError(f"Registered workspace does not exist: {path}")
@@ -282,7 +288,6 @@ _READ_DIAGNOSTIC_PREFIXES = {
     ("python",): {"--version"},
     ("python", "-m"): {"pytest", "unittest"},
 }
-_ALLOWED_NPM_SCRIPTS = {"test", "run:test", "run:lint", "run:check", "run:build", "lint", "check", "build"}
 _ALLOWED_PYTHON_MODULES = {"pytest", "unittest", "pip"}
 
 def _required_text(value: Any, field: str) -> str:
@@ -485,9 +490,10 @@ def _command_allowed(argv: tuple[str, ...], workspace_path: Path) -> tuple[bool,
         if operation in allowed_ops:
             return True, f"git {operation}"
         return False, f"unsupported git operation: {operation}"
-    if executable == "npm.cmd":
+    if executable in {"npm", "npm.cmd", "npm.exe"}:
         if len(argv) > 1 and argv[1] == "run":
-            if len(argv) > 2 and argv[2] in _ALLOWED_NPM_SCRIPTS:
+            project_scripts = _load_project_scripts(workspace_path)
+            if len(argv) > 2 and argv[2] in project_scripts:
                 return True, "npm script"
         elif len(argv) > 1 and argv[1] == "install":
             return True, "npm install"
@@ -496,6 +502,16 @@ def _command_allowed(argv: tuple[str, ...], workspace_path: Path) -> tuple[bool,
         elif len(argv) == 2 and argv[1] == "--version":
             return True, "npm version"
         return False, f"npm command not allowlisted: {argv[1] if len(argv) > 1 else 'unknown'}"
+    if executable in {"node", "node.exe", "node.cmd"}:
+        if len(argv) == 2 and argv[1] == "--version":
+            return True, "node version"
+        if len(argv) > 1:
+            script = Path(argv[1])
+            if script.suffix.lower() in {".js", ".mjs", ".cjs"} and not _path_escapes_workspace(workspace_path, argv[1]):
+                candidate = (workspace_path / script).resolve()
+                if candidate.is_file():
+                    return True, "workspace node script"
+        return False, "node command requires an existing workspace script"
     if executable in {"python", "python.exe"}:
         if len(argv) > 2 and argv[1] == "-m":
             module = argv[2].lower()
@@ -739,10 +755,11 @@ def run_command(request: RunRequest, config_path: Path) -> dict[str, Any]:
             f"Reason: {reason}\nSafe alternative: use a diagnostic or project-defined command"
         )
 
-    capture_mutation = _is_mutating_command(request.argv)
     for arg in request.argv:
         if _path_escapes_workspace(workspace_path, arg):
             raise BridgeError(f"path escapes workspace: {arg}")
+
+    capture_mutation = _is_mutating_command(request.argv)
 
     from execution_evidence import ExecutionHistory
     history = ExecutionHistory(Path(__file__).resolve().parent / "state", workspace.name, request.argv)
@@ -780,10 +797,10 @@ def run_sequence(request: RunSequenceRequest, config_path: Path) -> dict[str, An
                 f"Reason: {reason}\nSafe alternative: use a diagnostic or project-defined command"
             )
 
-        capture_mutation = _is_mutating_command(step.argv)
         for arg in step.argv:
             if _path_escapes_workspace(workspace_path, arg):
                 raise BridgeError(f"path escapes workspace: {arg}")
+        capture_mutation = _is_mutating_command(step.argv)
 
         if history is None:
             from execution_evidence import ExecutionHistory

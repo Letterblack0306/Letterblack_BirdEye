@@ -5,6 +5,7 @@ import fnmatch
 import hashlib
 import heapq
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -28,8 +29,18 @@ DATABASE_PATH = STATE_DIR / "workspace.db"
 PROGRESS_PATH = STATE_DIR / "trace_progress.json"
 SUMMARY_PATH = STATE_DIR / "workspace_trace.json"
 LAST_SEARCH_PATH = STATE_DIR / "last_search.json"
+LEGACY_RETIREMENT_PATH = STATE_DIR / "eyes_legacy_retired.json"
 
 STATE_FILE_SCHEMA_VERSION = 1
+
+
+def legacy_storage_retired() -> bool:
+    """Return whether the persisted EYES retirement switch is active."""
+    try:
+        value = json.loads(LEGACY_RETIREMENT_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return False
+    return isinstance(value, dict) and value.get("retired") is True
 
 _AUTHORIZED_TRACE_TOP_FIELDS: frozenset[str] = frozenset({
     "run_id",
@@ -298,6 +309,12 @@ class Context:
     @classmethod
     def load(cls) -> "Context":
         config = load_json(CONFIG_PATH)
+        if os.environ.get("BIRDEYE_EYES_ACTIVE", "1").strip().lower() not in {"0", "false", "no"}:
+            try:
+                from eye import load_config as load_eye_config
+                config = load_eye_config()
+            except (ImportError, OSError, ValueError, RuntimeError):
+                config = load_json(CONFIG_PATH)
         governance = load_json(GOVERNANCE_PATH)
         raw_roots = config.get("roots")
         if raw_roots is None:
@@ -478,6 +495,10 @@ def iter_files(ctx: Context, root: KnowledgeRoot) -> Iterable[tuple[Path, str]]:
 
 
 def open_database() -> sqlite3.Connection:
+    if legacy_storage_retired():
+        raise GovernanceError(
+            "legacy state\\workspace.db is retired; use the EYES query projection"
+        )
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DATABASE_PATH, timeout=60)
     connection.row_factory = sqlite3.Row
@@ -828,6 +849,34 @@ def index_file_event(
         connection.close()
 
 
+def reconcile_roots(
+    ctx: Context,
+    roots: list[str] | tuple[str, ...] | set[str],
+    *,
+    progress_every: int | None = None,
+    checkpoint_every: int | None = None,
+) -> dict[str, Any]:
+    requested = {safe_root_name(name) for name in roots}
+    if not requested:
+        raise GovernanceError("At least one root is required for scoped reconciliation")
+
+    known = {root.name: root for root in ctx.roots}
+    unknown = requested - set(known)
+    if unknown:
+        raise GovernanceError(f"Unknown roots: {sorted(unknown)}")
+
+    selected = tuple(root for root in ctx.roots if root.name in requested)
+    scoped = Context(
+        config=ctx.config,
+        governance=ctx.governance,
+        roots=selected,
+    )
+    return trace_workspace(
+        scoped,
+        progress_every=progress_every,
+        checkpoint_every=checkpoint_every,
+    )
+
 def trace_workspace(
     ctx: Context,
     *,
@@ -1171,7 +1220,17 @@ def search_workspace(
     started = time.monotonic()
     connection = None
     try:
-        connection = open_database()
+        query_path = STATE_DIR.parent / "eye_Databa" / "eye_workspace_query_01.db"
+        if query_path.exists():
+            from eye_query import connect_query, initialize_workspace_query
+            connection = connect_query("workspace")
+            initialize_workspace_query(connection)
+        else:
+            if legacy_storage_retired():
+                raise GovernanceError(
+                    "EYES query projection is unavailable and legacy storage is retired"
+                )
+            connection = open_database()
         scanned = skipped = serial = 0
         candidates: list[tuple[int, int, dict[str, Any]]] = []
 

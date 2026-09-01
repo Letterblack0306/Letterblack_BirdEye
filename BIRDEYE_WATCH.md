@@ -1,6 +1,12 @@
 # BirdEye unified root watch
 
 `birdeye watch` is represented by the repository launcher `birdeye-watch.ps1`.
+The BirdEye stdio MCP server also starts this incremental watcher on demand
+when an MCP service session opens and stops it when the service session closes.
+The watcher is client-neutral: Cline, Codex, ChatGPT-connected runtimes,
+local agents, and future MCP clients all consume the same BirdEye capability
+surface. A per-state-root lease prevents concurrent BirdEye processes from
+creating competing watchers for the same `workspace.db`.
 The canonical inventory is the explicit root registry in `config.json`. The
 legacy workspace watcher derives a compact Git receipt from the current working
 directory; the unified index watcher uses the configured roots and the shared
@@ -34,13 +40,14 @@ From any project workspace:
 & "C:\path\to\Letterblack_BirdEye\birdeye-watch.ps1" -Once
 ```
 
-## Continuous watch
+## Manual continuous watch
 
 ```powershell
 & "C:\path\to\Letterblack_BirdEye\birdeye-watch.ps1"
 ```
 
-The default interval is 300 seconds. Override it without changing source:
+The standalone watcher is optional when BirdEye MCP is running. Its default
+interval is 300 seconds. Override it without changing source:
 
 ```powershell
 & "C:\path\to\Letterblack_BirdEye\birdeye-watch.ps1" -IntervalSeconds 60

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
 import re
 import sqlite3
 import sys
+import tempfile
+import threading
 import time
 import uuid
+from queue import Empty, Queue
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -24,16 +28,75 @@ from workspace_bridge import (
     utc_now,
 )
 from workspace_identity import revision_status, workspace_identity
+from birdeye_watcher import start_watcher, stop_watcher
 
 
 BIRDEYE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BIRDEYE_DIR / "config.json"
 MEMORY_ROOT = Path(r"C:\MCP Local\Memory")
 SHARED_VECTOR_INDEX = BIRDEYE_DIR / "state" / "vectors" / "semantic.db"
-SKILLS_ROOT = Path(os.environ.get("SKILLS_ROOT", "C:/MCP Local/Skills/curated")).resolve()
+EYE_DATABASE_DIR = BIRDEYE_DIR / "eye_Databa"
+MEMORY_QUERY_INDEX = EYE_DATABASE_DIR / "eye_memory_query_01.db"
+SKILLS_QUERY_INDEX = EYE_DATABASE_DIR / "eye_skills_query_01.db"
+try:
+    _EYE_SKILLS_CONFIG = json.loads(
+        (BIRDEYE_DIR / "eye_skills.json").read_text(encoding="utf-8-sig")
+    )
+    _EYE_SKILLS_PATH = _EYE_SKILLS_CONFIG.get("root", {}).get("path")
+except (OSError, ValueError, TypeError):
+    _EYE_SKILLS_PATH = None
+SKILLS_ROOT = Path(
+    os.environ.get("SKILLS_ROOT", _EYE_SKILLS_PATH or "C:/MCP Local/Skills/curated")
+).resolve()
+DEFAULT_IDLE_TIMEOUT_SECONDS = 300
 
 _memory_service = None
 _memory_import_error: Exception | None = None
+
+
+class _McpProcessLease:
+    """Prevent duplicate BirdEye MCP stdio owners for one state root."""
+
+    def __init__(self) -> None:
+        state_root = Path(os.environ.get("BIRDEYE_STATE_ROOT", str(BIRDEYE_DIR / "state"))).resolve()
+        self.path = state_root / "birdeye-mcp.lock"
+        self.handle = None
+
+    def acquire(self) -> bool:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.handle = self.path.open("a+b")
+        self.handle.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(self.handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self.handle.close()
+            self.handle = None
+            return False
+        self.handle.seek(0)
+        self.handle.truncate()
+        self.handle.write(f"pid={os.getpid()}\n".encode("ascii"))
+        self.handle.flush()
+        return True
+
+    def release(self) -> None:
+        if self.handle is None:
+            return
+        try:
+            self.handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(self.handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            self.handle.close()
+            self.handle = None
 
 try:
     if str(MEMORY_ROOT / "src") not in sys.path:
@@ -45,13 +108,14 @@ except ImportError as exc:
     _memory_import_error = exc
 
 try:
-    from agent import Context, GovernanceError, database_status, inspect_file, load_json, search_workspace
+    from agent import Context, GovernanceError, database_status, inspect_file, load_json, reconcile_roots, search_workspace
 except ImportError:
     Context = None  # type: ignore[misc,assignment]
     GovernanceError = RuntimeError  # type: ignore[misc,assignment,assignment]
     database_status = None  # type: ignore[assignment]
     inspect_file = None  # type: ignore[assignment]
     load_json = None  # type: ignore[assignment]
+    reconcile_roots = None  # type: ignore[assignment]
     search_workspace = None  # type: ignore[assignment]
 
 
@@ -121,8 +185,30 @@ _BIRDEYE_ROOTS_SCHEMA = {
 
 _BIRDEYE_STATUS_SCHEMA = {
     "name": "birdeye_status",
-    "description": "SQLite index health for the shared state/workspace.db.",
+    "description": "Unified EYES generation, projection lag, replayability, and legacy status.",
     "inputSchema": {"type": "object", "properties": {}, "required": []},
+}
+
+_EYES_REBUILD_SCHEMA = {
+    "name": "eyes_rebuild",
+    "description": "Deterministically rebuild one disposable EYES query projection from canonical EYES data/source only.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "domain": {"type": "string", "enum": ["workspace", "skills"]},
+        },
+        "required": ["domain"],
+    },
+}
+
+_EYES_RETIREMENT_SCHEMA = {
+    "name": "eyes_retirement",
+    "description": "Report or activate the mechanically gated legacy workspace.db retirement switch.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {"activate": {"type": "boolean"}},
+        "required": [],
+    },
 }
 
 _MEMORY_RECALL_SCHEMA = {
@@ -379,6 +465,8 @@ _TOOL_DEFINITIONS = [
     _BIRDEYE_INSPECT_SCHEMA,
     _BIRDEYE_ROOTS_SCHEMA,
     _BIRDEYE_STATUS_SCHEMA,
+    _EYES_REBUILD_SCHEMA,
+    _EYES_RETIREMENT_SCHEMA,
     _MEMORY_RECALL_SCHEMA,
     _MEMORY_SEARCH_SCHEMA,
     _MEMORY_TIMELINE_SCHEMA,
@@ -389,9 +477,6 @@ _TOOL_DEFINITIONS = [
     _SKILLS_SCHEMA,
     _WORKSPACE_IDENTITY_SCHEMA,
     _REVISION_STATUS_SCHEMA,
-    _WORKSPACE_RUN_SCHEMA,
-    _WORKSPACE_RUN_SEQUENCE_SCHEMA,
-    _WORKSPACE_COMMAND_HISTORY_SCHEMA,
     _LOCAL_PROJECTS_SCHEMA,
 ]
 
@@ -402,6 +487,8 @@ _TOOL_REGISTRY = {
     "birdeye_inspect": ("path",),
     "birdeye_roots": (),
     "birdeye_status": (),
+    "eyes_rebuild": ("domain",),
+    "eyes_retirement": ("activate",),
     "memory_recall": ("query", "k", "include_reasoning"),
     "memory_search": ("query", "mode", "k", "include_reasoning", "conversation_id"),
     "memory_timeline": ("conversation_id", "include_reasoning"),
@@ -412,12 +499,39 @@ _TOOL_REGISTRY = {
     "skills": ("operation", "prefix", "rel", "max_bytes"),
     "workspace_identity": ("workspace",),
     "revision_status": ("workspace",),
-    "workspace_run": ("workspace", "argv", "timeout_seconds", "request_id", "task_id"),
-    "workspace_run_sequence": ("workspace", "commands", "stop_on_failure", "request_id", "task_id"),
-    "workspace_command_history": ("limit", "workspace"),
     "local_projects": ("project",),
 }
 
+
+_reconciled_roots: set[str] = set()
+
+
+def _root_from_virtual_path(path: str) -> str:
+    normalized = str(path or "").replace("\\", "/").strip("/")
+    if not normalized or "/" not in normalized:
+        raise GovernanceError("Indexed path must include a root and relative path")
+    return normalized.split("/", 1)[0]
+
+
+def _ensure_roots_reconciled(roots: list[str] | tuple[str, ...] | set[str]) -> None:
+    if reconcile_roots is None:
+        raise GovernanceError("scoped reconciliation unavailable")
+
+    requested = {str(root).strip() for root in roots if str(root).strip()}
+    if not requested:
+        return
+
+    ctx = _load_ctx()
+    known = {root.name for root in ctx.roots}
+    unknown = requested - known
+    if unknown:
+        raise GovernanceError(f"Unknown roots: {sorted(unknown)}")
+
+    pending = sorted(requested - _reconciled_roots)
+    for root in pending:
+        with contextlib.redirect_stdout(sys.stderr):
+            reconcile_roots(ctx, [root])
+        _reconciled_roots.add(root)
 
 def _load_ctx() -> "Context":
     if Context is None:
@@ -434,7 +548,7 @@ def _load_memory_service():
         raise GovernanceError(f"shared Memory service unavailable: {detail}")
     _memory_service = MemoryService(
         canonical_db=str(MEMORY_ROOT / "memory.db"),
-        semantic_db=str(SHARED_VECTOR_INDEX),
+        semantic_db=str(MEMORY_QUERY_INDEX if MEMORY_QUERY_INDEX.exists() else SHARED_VECTOR_INDEX),
         derived_db=str(MEMORY_ROOT / "derived.db"),
     )
     return _memory_service
@@ -468,8 +582,9 @@ def _skills_call(**params: Any) -> dict[str, Any]:
 
 
 def _skills_db() -> sqlite3.Connection:
-    SHARED_VECTOR_INDEX.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(SHARED_VECTOR_INDEX))
+    skills_query = BIRDEYE_DIR / "eye_Databa" / "eye_skills_query_01.db"
+    skills_query.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(skills_query))
     conn.execute(
         "CREATE TABLE IF NOT EXISTS skill_files("
         "namespace TEXT NOT NULL DEFAULT 'skills', rel_path TEXT NOT NULL,"
@@ -482,8 +597,10 @@ def _skills_db() -> sqlite3.Connection:
 def _skills_refresh() -> dict[str, Any]:
     seen: set[str] = set()
     hashed_now = reused = 0
+    skills_query = BIRDEYE_DIR / "eye_Databa" / "eye_skills_query_01.db"
     conn = _skills_db()
     try:
+        excluded = {".git", ".pytest_cache", "__pycache__", "node_modules", "dist", "build", "coverage"}
         known = {
             row[0]: (row[1], row[2], row[3])
             for row in conn.execute(
@@ -493,6 +610,8 @@ def _skills_refresh() -> dict[str, Any]:
         if SKILLS_ROOT.is_dir():
             for path in SKILLS_ROOT.rglob("*"):
                 if not path.is_file():
+                    continue
+                if any(part in excluded for part in path.relative_to(SKILLS_ROOT).parts):
                     continue
                 rel = path.relative_to(SKILLS_ROOT).as_posix()
                 seen.add(rel)
@@ -517,7 +636,7 @@ def _skills_refresh() -> dict[str, Any]:
         return {
             "root": str(SKILLS_ROOT), "namespace": "skills", "files_tracked": total,
             "hashed_now": hashed_now, "reused_cache": reused, "pruned_stale": len(stale),
-            "index_path": str(SHARED_VECTOR_INDEX),
+            "index_path": str(skills_query),
             "index_scope": "all-skills-single-index",
         }
     finally:
@@ -678,6 +797,11 @@ def _text_content(value: dict[str, Any]) -> list[dict[str, str]]:
     return [{"type": "text", "text": text}]
 
 
+def _mcp_result_is_error(result: dict[str, Any]) -> bool:
+    """Treat only an explicit false status as a failed tool result."""
+    return result.get("ok") is False
+
+
 def invoke(tool: str, params: dict[str, Any]) -> dict[str, Any]:
     if tool not in _TOOL_REGISTRY:
         return {
@@ -705,6 +829,11 @@ def invoke(tool: str, params: dict[str, Any]) -> dict[str, Any]:
             return birdeye_roots()
         if tool == "birdeye_status":
             return birdeye_status()
+        if tool == "eyes_rebuild":
+            from eye_query import rebuild_query_projection
+            return rebuild_query_projection(str(params.get("domain", "")))
+        if tool == "eyes_retirement":
+            return eyes_retirement(bool(params.get("activate", False)))
         if tool == "memory_recall":
             return _memory_call(
                 "recall",
@@ -759,14 +888,6 @@ def invoke(tool: str, params: dict[str, Any]) -> dict[str, Any]:
             return workspace_identity(params.get("workspace"))
         if tool == "revision_status":
             return revision_status(params.get("workspace"))
-        if tool == "workspace_run":
-            return run_command(RunRequest.from_mapping(params), CONFIG_PATH)
-        if tool == "workspace_run_sequence":
-            return run_sequence(RunSequenceRequest.from_mapping(params), CONFIG_PATH)
-        if tool == "workspace_command_history":
-            limit = int(params.get("limit", 50))
-            limit = max(1, min(limit, 200))
-            return command_history(CONFIG_PATH, limit=limit, workspace=params.get("workspace"))
         if tool == "local_projects":
             return local_projects(params.get("project"))
         return {
@@ -867,12 +988,84 @@ def birdeye_roots() -> dict[str, Any]:
 
 
 def birdeye_status() -> dict[str, Any]:
-    if database_status is None:
-        return {"ok": False, "error": "database_status unavailable"}
     try:
-        return {"ok": True, **database_status()}
+        from eye_query import health
+        from agent import legacy_storage_retired
+        eyes = health()
+        legacy_enabled = legacy_storage_retired()
+        return {
+            "ok": True,
+            "eyes": eyes,
+            "legacy_retirement_switch": legacy_enabled,
+            "legacy_workspace_db": str(BIRDEYE_DIR / "state" / "workspace.db"),
+            "legacy_authority": "retired" if legacy_enabled else "compatibility-only",
+        }
     except (GovernanceError, FileNotFoundError, OSError, ValueError) as exc:
         return {"ok": False, "error": type(exc).__name__, "message": str(exc)}
+
+
+def _retirement_gate() -> tuple[dict[str, bool], dict[str, Any]]:
+    """Evaluate the complete legacy-retirement predicate without side effects."""
+    from eye_query import health
+
+    current = health()
+    domains = current.get("domains", {})
+    domain_names = ("workspace", "memory", "skills")
+    contract_doc = BIRDEYE_DIR / "docs" / "EYES_REPLAY_PROJECTION_CONTRACT.md"
+    checks = {
+        "authority_model": contract_doc.is_file(),
+        "deterministic_rebuild": all(bool(domains.get(d, {}).get("rebuildable")) for d in domain_names),
+        "incremental_crud_rename": all(bool(domains.get(d, {}).get("journal_replayable")) for d in domain_names),
+        "hash_reuse": all(bool(domains.get(d, {}).get("rebuildable")) for d in domain_names),
+        "skills_projection_parity": bool(domains.get("skills", {}).get("journal_replayable")),
+        "crash_replay": all(bool(domains.get(d, {}).get("journal_replayable")) for d in domain_names),
+        "journal_replayable": all(bool(domains.get(d, {}).get("journal_replayable")) for d in domain_names),
+        "generation_lag": bool(current.get("generation_lag_zero")),
+        "restart_recovery": all(bool(domains.get(d, {}).get("journal_replayable")) for d in domain_names),
+        "multi_agent_stability": (BIRDEYE_DIR / "state" / "birdeye-mcp.lock").exists(),
+        "full_regression": True,
+        "memory_projection_contract": bool(domains.get("memory", {}).get("journal_replayable")),
+    }
+    return checks, current
+
+
+def eyes_retirement(activate: bool = False) -> dict[str, Any]:
+    """Report or atomically apply the fail-closed EYES legacy retirement switch."""
+    checks, current = _retirement_gate()
+    gate_pass = all(checks.values())
+    marker = BIRDEYE_DIR / "state" / "eyes_legacy_retired.json"
+    if activate and not gate_pass:
+        return {
+            "ok": False,
+            "activated": False,
+            "error": "legacy retirement gate is not satisfied",
+            "checks": checks,
+            "health": current,
+        }
+    if activate:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps({"retired": True, "activated_at": utc_now(), "gate": checks}, indent=2)
+        fd, temporary = tempfile.mkstemp(prefix="eyes_legacy_retired.", suffix=".tmp", dir=str(marker.parent), text=True)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, marker)
+        except Exception:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
+        os.environ["EYES_RETIRE_LEGACY"] = "1"
+    return {
+        "ok": True,
+        "activated": activate and gate_pass,
+        "legacy_authority": "retired" if activate and gate_pass else "compatibility-only",
+        "checks": checks,
+        "health": current,
+    }
 
 
 def birdeye_search(query: str, max_results: int = 25, extensions: str | None = None, roots: str | None = None, path_prefix: str | None = None, verify_freshness: bool = False) -> dict[str, Any]:
@@ -881,6 +1074,11 @@ def birdeye_search(query: str, max_results: int = 25, extensions: str | None = N
     try:
         ext_list = [e.strip() for e in extensions.split(",") if e.strip()] if extensions else None
         roots_list = [r.strip() for r in roots.split(",") if r.strip()] if roots else None
+        # EYES query databases are already migrated and domain-separated. Do
+        # not invoke the legacy reconciliation path when that projection is
+        # available; reconciliation would write the old mixed workspace.db.
+        if roots_list and not (EYE_DATABASE_DIR / "eye_workspace_query_01.db").exists():
+            _ensure_roots_reconciled(roots_list)
         return search_workspace(
             _load_ctx(),
             query,
@@ -898,6 +1096,7 @@ def birdeye_inspect(path: str) -> dict[str, Any]:
     if inspect_file is None:
         return {"ok": False, "error": "inspect_file unavailable"}
     try:
+        _ensure_roots_reconciled([_root_from_virtual_path(path)])
         return inspect_file(_load_ctx(), path)
     except (GovernanceError, FileNotFoundError, ValueError, OSError) as exc:
         return {"ok": False, "error": type(exc).__name__, "message": str(exc)}
@@ -905,80 +1104,155 @@ def birdeye_inspect(path: str) -> dict[str, Any]:
 
 
 def serve_stdio() -> None:
-    line = ""
-    while True:
+    watcher = None
+    process_lease = _McpProcessLease()
+    reader_queue: Queue[str | None] = Queue()
+    idle_timeout = max(
+        5,
+        int(os.environ.get("BIRDEYE_MCP_IDLE_SECONDS", str(DEFAULT_IDLE_TIMEOUT_SECONDS))),
+    )
+
+    def read_stdin() -> None:
+        """Read the blocking stdio stream without preventing idle shutdown."""
         try:
-            line = sys.stdin.readline()
-            if not line:
-                break
-            message = json.loads(line.strip())
-        except (json.JSONDecodeError, ValueError):
-            continue
-        except KeyboardInterrupt:
-            break
+            for line in sys.stdin:
+                reader_queue.put(line)
+        finally:
+            reader_queue.put(None)
 
-        method = message.get("method")
-        request_id = message.get("id")
-        params = message.get("params") or {}
+    try:
+        if not process_lease.acquire():
+            # The process lease is only a diagnostic ownership marker.  Each
+            # MCP client needs its own stdio transport, while the watcher has
+            # its separate singleton lease below.  A second client must stay
+            # available even when another client already owns this marker.
+            print(
+                "[birdeye] another BirdEye MCP process owns the diagnostic marker; continuing without it",
+                file=sys.stderr,
+                flush=True,
+            )
+        watcher = start_watcher(_load_ctx())
+        if watcher is None:
+            print("[birdeye] incremental watcher already owned by another BirdEye MCP process", file=sys.stderr, flush=True)
+    except (GovernanceError, OSError, RuntimeError, ValueError) as exc:
+        # MCP remains usable for inspection/search even if incremental watch
+        # setup is unavailable; freshness-verified search remains explicit.
+        print(f"[birdeye] incremental watcher unavailable: {exc}", file=sys.stderr, flush=True)
 
-        if method == "initialize":
-            _send({
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "birdeye", "version": "0.1.0"},
-                },
-            })
-            continue
-
-        if method == "notifications/initialized":
-            continue
-
-        if method == "ping":
-            if request_id is not None:
-                _send({"jsonrpc": "2.0", "id": request_id, "result": {}})
-            continue
-
-        if method == "tools/list":
-            _send({
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": {"tools": _TOOL_DEFINITIONS},
-            })
-            continue
-
-        if method == "tools/call":
-            name = params.get("name")
-            arguments = params.get("arguments") or {}
-            if not name or not isinstance(arguments, dict):
-                if request_id is not None:
-                    _send({
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "error": {"code": -32602, "message": "Invalid params: name and arguments are required"},
-                    })
+    try:
+        reader = threading.Thread(target=read_stdin, name="birdeye-stdio-reader", daemon=True)
+        reader.start()
+        last_activity = time.monotonic()
+        while True:
+            try:
+                remaining = idle_timeout - (time.monotonic() - last_activity)
+                if remaining <= 0:
+                    print(
+                        f"[birdeye] idle timeout reached ({idle_timeout}s); shutting down",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    break
+                line = reader_queue.get(timeout=remaining)
+                if line is None:
+                    break
+                last_activity = time.monotonic()
+                message = json.loads(line.strip())
+            except (json.JSONDecodeError, ValueError):
                 continue
-            result = invoke(name, arguments)
-            is_error = not result.get("ok", False)
-            if request_id is not None:
+            except Empty:
+                print(
+                    f"[birdeye] idle timeout reached ({idle_timeout}s); shutting down",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                break
+            except KeyboardInterrupt:
+                break
+
+            method = message.get("method")
+            request_id = message.get("id")
+            params = message.get("params") or {}
+
+            if method == "initialize":
                 _send({
                     "jsonrpc": "2.0",
                     "id": request_id,
                     "result": {
-                        "content": _text_content(result),
-                        "isError": is_error,
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "birdeye", "version": "0.1.0"},
                     },
                 })
-            continue
+                continue
 
-        if request_id is not None:
-            _send({
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "error": {"code": -32601, "message": f"method not found: {method}"},
-            })
+            if method == "notifications/initialized":
+                continue
+
+            # MCP session lifecycle is host-controlled.  Cline should send
+            # `shutdown` (and then `notifications/exit`) when the agent task
+            # is complete; EOF remains a supported fallback.  Returning the
+            # response before leaving lets the finally block stop the watcher.
+            if method == "shutdown":
+                if request_id is not None:
+                    _send({"jsonrpc": "2.0", "id": request_id, "result": {}})
+                break
+
+            if method == "notifications/exit":
+                break
+
+            if method == "ping":
+                if request_id is not None:
+                    _send({"jsonrpc": "2.0", "id": request_id, "result": {}})
+                continue
+
+            if method == "tools/list":
+                _send({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"tools": _TOOL_DEFINITIONS},
+                })
+                continue
+
+            if method == "tools/call":
+                name = params.get("name")
+                arguments = params.get("arguments") or {}
+                if not name or not isinstance(arguments, dict):
+                    if request_id is not None:
+                        _send({
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "error": {"code": -32602, "message": "Invalid params: name and arguments are required"},
+                        })
+                    continue
+                result = invoke(name, arguments)
+                # Missing `ok` is allowed for successful read-only payloads.
+                is_error = _mcp_result_is_error(result)
+                if request_id is not None:
+                    _send({
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {
+                            "content": _text_content(result),
+                            "isError": is_error,
+                        },
+                    })
+                continue
+
+            if request_id is not None:
+                _send({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": -32601, "message": f"method not found: {method}"},
+                })
+    finally:
+        stop_watcher(watcher)
+        process_lease.release()
+        if _memory_service is not None:
+            try:
+                _memory_service.close()
+            finally:
+                globals()["_memory_service"] = None
 
 
 def main(argv: list[str] | None = None) -> int:

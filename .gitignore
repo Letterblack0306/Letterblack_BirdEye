@@ -10,6 +10,15 @@ state/
 state/memory-indexes/
 state/vectors/
 
+# Generated local database/index artifacts and migration backups
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.bak
+eye_Databa/
+archive/
+
 # Local-only configuration
 config.json
 

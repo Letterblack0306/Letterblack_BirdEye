@@ -362,6 +362,19 @@ def test_mcp_invokes_workspace_command_history(tmp_path, monkeypatch):
     monkeypatch.setattr("mcp_server.command_history", fake_history)
     result = invoke("workspace_command_history", {})
     assert result == expected
+
+
+def test_stdio_error_flag_requires_explicit_false():
+    from mcp_server import _mcp_result_is_error, invoke
+
+    # command history is a successful read-only payload without an `ok` key.
+    # The stdio envelope must not convert that omitted field into isError=true.
+    result = invoke("workspace_command_history", {})
+    assert "ok" not in result or result["ok"] is True
+    assert result.get("count", 0) >= 0
+    assert _mcp_result_is_error(result) is False
+    assert _mcp_result_is_error({"ok": True, "count": 0}) is False
+    assert _mcp_result_is_error({"ok": False, "error": "failed"}) is True
     for value in ("my_secret_key.pem", "credentials.json", "secrets.pfx"):
         assert "REDACTED" in _redact_secret(value)
     assert _redact_secret("main.py") == "main.py"

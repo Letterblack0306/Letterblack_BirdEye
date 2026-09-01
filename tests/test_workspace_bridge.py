@@ -29,6 +29,21 @@ def _config(tmp_path: Path) -> Path:
     return config
 
 
+def _current_config(tmp_path: Path) -> Path:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = tmp_path / "current-config.json"
+    config.write_text(
+        json.dumps({
+            "roots": [
+                {"id": "demo", "path": str(workspace), "class": "workspace"},
+            ]
+        }),
+        encoding="utf-8",
+    )
+    return config
+
+
 def test_comment_request_is_typed():
     request = load_request_from_comment(
         '/birdeye {"workspace":"demo","operation":"git.status"}'
@@ -53,6 +68,12 @@ def test_workspace_must_be_registered(tmp_path):
 
 def test_registered_workspace_resolves(tmp_path):
     config = _config(tmp_path)
+    resolved = resolve_workspace(config, "demo")
+    assert resolved.path == (tmp_path / "workspace").resolve()
+
+
+def test_current_birdeye_root_registry_resolves(tmp_path):
+    config = _current_config(tmp_path)
     resolved = resolve_workspace(config, "demo")
     assert resolved.path == (tmp_path / "workspace").resolve()
 
