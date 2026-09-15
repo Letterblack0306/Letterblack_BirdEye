@@ -205,6 +205,91 @@ def read_applied_generation(conn: sqlite3.Connection) -> int:
     return int(row[0]) if row else 0
 
 
+def _project_current_files(
+    query_conn: sqlite3.Connection,
+    data_conn: sqlite3.Connection,
+    domain: str,
+    canonical_generation: int,
+) -> int:
+    """Bootstrap an empty projection from the current canonical file state.
+
+    Initial migration rows may predate generation numbering.  When the query
+    projection is empty at generation zero, the canonical ``files`` table is
+    the complete current-state baseline; using it also makes replay complete
+    without rewriting historical NULL-generation ledger rows.
+    """
+    from agent import safe_root_name, utc_now
+
+    now = utc_now()
+    projected = 0
+    rows = data_conn.execute(
+        "SELECT source_id, relative_path, physical_path, size, modified_ns, "
+        "sha256, hash_status, error FROM files WHERE domain=? "
+        "ORDER BY source_id, relative_path",
+        (domain,),
+    ).fetchall()
+    for row in rows:
+        physical = Path(row["physical_path"]) if row["physical_path"] else None
+        if physical is None or not physical.is_file():
+            continue
+        try:
+            stat = physical.stat()
+            size = int(stat.st_size)
+        except (OSError, PermissionError) as exc:
+            size = int(row["size"] or 0)
+            stat_mtime_ns = int(row["modified_ns"] or 0)
+            content = None
+            digest = row["sha256"]
+            hash_status = "unreadable"
+            error = f"{type(exc).__name__}: {exc}"
+            stat = None
+        else:
+            stat_mtime_ns = int(stat.st_mtime_ns)
+            content = None
+            digest = row["sha256"]
+            hash_status = row["hash_status"] or "unhashed"
+            error = row["error"]
+            if size <= 5_000_000:
+                try:
+                    raw = physical.read_bytes()
+                except (OSError, PermissionError) as exc:
+                    hash_status = "unreadable"
+                    error = f"{type(exc).__name__}: {exc}"
+                else:
+                    content = raw.decode("utf-8", errors="ignore")
+                    digest = hashlib.sha256(raw).hexdigest()
+                    hash_status = "hashed"
+                    error = None
+            elif not digest:
+                hash_status = "too_large"
+
+        root_name = safe_root_name(row["source_id"])
+        relative = str(row["relative_path"]).replace("\\", "/")
+        projection_path = root_name if relative == "." else f"{root_name}/{relative}"
+        file_type, line_count, token_count, feature_terms = _query_text_features(
+            content or "", Path(relative).suffix.lower()
+        )
+        query_conn.execute(
+            "INSERT INTO files(root,path,physical_path,size,modified_ns,sha256,content,"
+            "hash_status,error,first_seen_at,last_seen_at,last_seen_run,extension,file_type,"
+            "line_count,token_count,feature_terms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(root,path) DO UPDATE SET physical_path=excluded.physical_path,"
+            "size=excluded.size,modified_ns=excluded.modified_ns,sha256=excluded.sha256,"
+            "content=excluded.content,hash_status=excluded.hash_status,error=excluded.error,"
+            "last_seen_at=excluded.last_seen_at,last_seen_run=excluded.last_seen_run,"
+            "extension=excluded.extension,file_type=excluded.file_type,line_count=excluded.line_count,"
+            "token_count=excluded.token_count,feature_terms=excluded.feature_terms",
+            (
+                root_name, projection_path, str(physical), size, stat_mtime_ns,
+                digest, content, hash_status, error, now, now,
+                f"bootstrap:{canonical_generation}", physical.suffix.lower(), file_type,
+                line_count, token_count, feature_terms,
+            ),
+        )
+        projected += 1
+    return projected
+
+
 def _query_text_features(content: str, extension: str) -> tuple[str, int, int, str]:
     """Derive projection feature columns from content (mirrors watcher behavior)."""
     file_type = {
@@ -295,6 +380,7 @@ def project_pending_changes(domain: str, number: int = 1) -> dict[str, Any]:
         ).fetchone()
         canonical = int(canonical_row[0]) if canonical_row else 0
         applied = read_applied_generation(query_conn)
+        query_count = query_conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
         if canonical <= applied:
             return {
                 "ok": True,
@@ -303,6 +389,26 @@ def project_pending_changes(domain: str, number: int = 1) -> dict[str, Any]:
                 "applied_generation": applied,
                 "lag": canonical - applied,
                 "replayed": 0,
+            }
+
+        if applied == 0 and query_count == 0:
+            projected = _project_current_files(
+                query_conn, data_conn, domain, canonical
+            )
+            query_conn.execute(
+                "INSERT INTO meta(key,value) VALUES('applied_generation',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(canonical),),
+            )
+            query_conn.commit()
+            return {
+                "ok": True,
+                "domain": domain,
+                "canonical_generation": canonical,
+                "applied_generation": canonical,
+                "lag": 0,
+                "replayed": projected,
+                "bootstrap": True,
             }
 
         # Ledger-driven and ordered. Coalesce per key to the latest generation
