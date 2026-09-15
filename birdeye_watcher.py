@@ -78,6 +78,22 @@ def _virtual(root, relative: Path) -> str:
     return root.name if posix == "." else f"{root.name}/{posix}"
 
 
+def _is_birdeye_database_artifact(path: Path) -> bool:
+    """Return whether *path* is BirdEye's generated database state."""
+    resolved = Path(path).resolve()
+    name = resolved.name.lower()
+    if not name.endswith((".db", ".db-wal", ".db-shm")):
+        return False
+    database_roots = (
+        (agent.ROOT / "eye_Databa").resolve(),
+        agent.STATE_DIR.resolve(),
+    )
+    return any(
+        resolved == database_root or database_root in resolved.parents
+        for database_root in database_roots
+    )
+
+
 def _governed(ctx: Context, root, relative: Path, virtual: str) -> bool:
     forbidden = list(ctx.governance.get("forbidden_globs", []))
     allowed = list(ctx.governance.get("allowed_read_paths", ["."]))
@@ -95,6 +111,8 @@ class _IndexHandler(FileSystemEventHandler):
 
     def _resolve(self, path: str):
         resolved = Path(path).resolve()
+        if _is_birdeye_database_artifact(resolved):
+            return None, None
         for root in self.roots:
             try:
                 relative = resolved.relative_to(root.path)
