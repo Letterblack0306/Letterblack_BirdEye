@@ -106,7 +106,7 @@ def test_birdeye_inspect_reconciles_path_root_before_inspect(monkeypatch):
     monkeypatch.setattr(
         mcp_server,
         "inspect_file",
-        lambda ctx, path: events.append(("inspect", path)) or {"ok": True},
+        lambda ctx, path, **kwargs: events.append(("inspect", path, kwargs)) or {"ok": True},
     )
     monkeypatch.setattr(mcp_server, "_load_ctx", lambda: object())
 
@@ -115,5 +115,5 @@ def test_birdeye_inspect_reconciles_path_root_before_inspect(monkeypatch):
     assert result["ok"] is True
     assert events == [
         ("reconcile", ("a",)),
-        ("inspect", "a/src/file.py"),
+        ("inspect", "a/src/file.py", {"start_line": None, "end_line": None}),
     ]

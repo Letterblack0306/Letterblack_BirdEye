@@ -167,11 +167,13 @@ _BIRDEYE_SEARCH_SCHEMA = {
 
 _BIRDEYE_INSPECT_SCHEMA = {
     "name": "birdeye_inspect",
-    "description": "Read one indexed file by virtual path (root/relative).",
+    "description": "Read one indexed file by virtual path (root/relative). Optionally slice by line range.",
     "inputSchema": {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "Virtual path, e.g. gpt-knowledge/knowledge-index.json."}
+            "path": {"type": "string", "description": "Virtual path, e.g. gpt-knowledge/knowledge-index.json."},
+            "start_line": {"type": "integer", "description": "Optional 1-based start line (inclusive). Omit for full file."},
+            "end_line": {"type": "integer", "description": "Optional 1-based end line (inclusive). Omit for full file."},
         },
         "required": ["path"],
     },
@@ -484,7 +486,7 @@ _TOOL_REGISTRY = {
     "knowledge_route": ("task",),
     "knowledge_read": ("reference",),
     "birdeye_search": ("query", "max_results", "extensions", "roots", "path_prefix", "verify_freshness"),
-    "birdeye_inspect": ("path",),
+    "birdeye_inspect": ("path", "start_line", "end_line"),
     "birdeye_roots": (),
     "birdeye_status": (),
     "eyes_rebuild": ("domain",),
@@ -824,7 +826,11 @@ def invoke(tool: str, params: dict[str, Any]) -> dict[str, Any]:
                 bool(params.get("verify_freshness", False)),
             )
         if tool == "birdeye_inspect":
-            return birdeye_inspect(params.get("path", ""))
+            return birdeye_inspect(
+                params.get("path", ""),
+                start_line=params.get("start_line"),
+                end_line=params.get("end_line"),
+            )
         if tool == "birdeye_roots":
             return birdeye_roots()
         if tool == "birdeye_status":
@@ -1092,12 +1098,12 @@ def birdeye_search(query: str, max_results: int = 25, extensions: str | None = N
         return {"ok": False, "error": type(exc).__name__, "message": str(exc)}
 
 
-def birdeye_inspect(path: str) -> dict[str, Any]:
+def birdeye_inspect(path: str, start_line: int | None = None, end_line: int | None = None) -> dict[str, Any]:
     if inspect_file is None:
         return {"ok": False, "error": "inspect_file unavailable"}
     try:
         _ensure_roots_reconciled([_root_from_virtual_path(path)])
-        return inspect_file(_load_ctx(), path)
+        return inspect_file(_load_ctx(), path, start_line=start_line, end_line=end_line)
     except (GovernanceError, FileNotFoundError, ValueError, OSError) as exc:
         return {"ok": False, "error": type(exc).__name__, "message": str(exc)}
 

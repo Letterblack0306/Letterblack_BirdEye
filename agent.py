@@ -1100,7 +1100,10 @@ def trace_workspace(
         connection.close()
 
 
-def inspect_file(ctx: Context, value: str) -> dict[str, Any]:
+def inspect_file(ctx: Context, value: str, start_line: int | None = None, end_line: int | None = None) -> dict[str, Any]:
+    for name, line in (("start_line", start_line), ("end_line", end_line)):
+        if line is not None and (isinstance(line, bool) or not isinstance(line, int)):
+            raise ValueError(f"{name} must be an integer or null")
     root, path = split_virtual_path(ctx, value)
     if not path.exists() or not path.is_file():
         raise FileNotFoundError(f"File does not exist: {value}")
@@ -1119,13 +1122,41 @@ def inspect_file(ctx: Context, value: str) -> dict[str, Any]:
         content = data.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise GovernanceError(f"Only UTF-8 text files are supported: {virtual}") from exc
-    return {
+    # Compute SHA-256 of full file (preserved even when slicing)
+    full_sha256 = hashlib.sha256(data).hexdigest()
+    # Apply line range slicing if requested (1-based inclusive)
+    returned_range: tuple[int, int] | None = None
+    if start_line is not None or end_line is not None:
+        lines = content.splitlines(keepends=True)
+        total_lines = len(lines)
+        # Convert 1-based to 0-based indices
+        start_idx = (start_line - 1) if start_line is not None else 0
+        end_idx = end_line if end_line is not None else total_lines
+        # Validate range
+        if start_line is not None and start_line < 1:
+            raise ValueError("start_line must be >= 1")
+        if end_line is not None and end_line < 1:
+            raise ValueError("end_line must be >= 1")
+        if start_line is not None and end_line is not None and start_line > end_line:
+            raise ValueError(f"start_line ({start_line}) cannot exceed end_line ({end_line})")
+        if start_idx >= total_lines and total_lines > 0:
+            raise ValueError(f"start_line ({start_line}) exceeds file length ({total_lines} lines)")
+        # Clamp to valid range
+        start_idx = max(0, min(start_idx, total_lines))
+        end_idx = max(start_idx, min(end_idx, total_lines))
+        sliced = "".join(lines[start_idx:end_idx])
+        content = sliced
+        returned_range = (start_idx + 1, end_idx)  # Convert back to 1-based for response
+    result = {
         "root": root.name,
         "path": virtual,
         "size": len(data),
-        "sha256": hashlib.sha256(data).hexdigest(),
+        "sha256": full_sha256,
         "content": content,
     }
+    if returned_range is not None:
+        result["line_range"] = {"start": returned_range[0], "end": returned_range[1]}
+    return result
 
 
 def _classify_source(path: str) -> tuple[str, int]:
