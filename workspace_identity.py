@@ -154,25 +154,37 @@ def workspace_identity(workspace: str | None = None) -> dict[str, Any]:
     root_path = root.path.resolve()
     observed_at = _utc_now()
 
-    if not _git_repository(root_path):
+    try:
+        if not _git_repository(root_path):
+            return {
+                "ok": True,
+                "workspace_id": root.name,
+                "workspace_root": str(root_path),
+                "root_class": root.root_class,
+                "observed_at": observed_at,
+                "git": {"is_repository": False},
+                "runtime_active": "unverified",
+            }
+
+        branch, head, detached = _branch_and_head(root_path)
+        status = _status_porcelain(root_path)
+        git_root = Path(_git_value(root_path, "rev-parse", "--show-toplevel")).resolve()
+        git_dir = _git_value(root_path, "rev-parse", "--git-dir")
+        common_dir = _git_value(root_path, "rev-parse", "--git-common-dir")
+        worktree = _git_value(root_path, "rev-parse", "--show-toplevel")
+        submodules = _git(root_path, "submodule", "status", "--recursive", check=False)
+        submodule_lines = [line for line in submodules.stdout.splitlines() if line.strip()]
+    except subprocess.TimeoutExpired:
         return {
             "ok": True,
+            "status": "timeout",
             "workspace_id": root.name,
             "workspace_root": str(root_path),
             "root_class": root.root_class,
             "observed_at": observed_at,
-            "git": {"is_repository": False},
+            "git": {"status": "timeout", "error": "git_status_timeout"},
             "runtime_active": "unverified",
         }
-
-    branch, head, detached = _branch_and_head(root_path)
-    status = _status_porcelain(root_path)
-    git_root = Path(_git_value(root_path, "rev-parse", "--show-toplevel")).resolve()
-    git_dir = _git_value(root_path, "rev-parse", "--git-dir")
-    common_dir = _git_value(root_path, "rev-parse", "--git-common-dir")
-    worktree = _git_value(root_path, "rev-parse", "--show-toplevel")
-    submodules = _git(root_path, "submodule", "status", "--recursive", check=False)
-    submodule_lines = [line for line in submodules.stdout.splitlines() if line.strip()]
 
     return {
         "ok": True,
@@ -208,18 +220,30 @@ def revision_status(workspace: str | None = None) -> dict[str, Any]:
     root_path = root.path.resolve()
     observed_at = _utc_now()
 
-    if not _git_repository(root_path):
+    try:
+        if not _git_repository(root_path):
+            return {
+                "ok": True,
+                "workspace_id": root.name,
+                "workspace_root": str(root_path),
+                "observed_at": observed_at,
+                "git": {"is_repository": False},
+                "runtime_active": "unverified",
+            }
+
+        branch, head, detached = _branch_and_head(root_path)
+        status = _status_porcelain(root_path)
+    except subprocess.TimeoutExpired:
         return {
             "ok": True,
+            "status": "timeout",
             "workspace_id": root.name,
             "workspace_root": str(root_path),
+            "root_class": root.root_class,
             "observed_at": observed_at,
-            "git": {"is_repository": False},
+            "git": {"status": "timeout", "error": "git_status_timeout"},
             "runtime_active": "unverified",
         }
-
-    branch, head, detached = _branch_and_head(root_path)
-    status = _status_porcelain(root_path)
     return {
         "ok": True,
         "workspace_id": root.name,
