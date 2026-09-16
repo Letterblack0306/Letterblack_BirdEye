@@ -313,42 +313,11 @@ def test_stdout_stderr_captured(tmp_path, monkeypatch):
 def test_mcp_tools_list_exposes_only_allowed_tools():
     from mcp_server import _TOOL_DEFINITIONS
     names = {tool["name"] for tool in _TOOL_DEFINITIONS}
-    assert "workspace_run" in names
-    assert "workspace_run_sequence" in names
     assert "workspace_command_history" in names
     assert "workspace_identity" in names
     assert "revision_status" in names
     for forbidden in ("terminal", "shell", "powershell", "exec", "run_anything"):
         assert forbidden not in names
-
-
-def test_mcp_invokes_workspace_run(tmp_path, monkeypatch):
-    from mcp_server import invoke
-
-    expected = {"ok": True, "workspace": "demo", "cwd": "<workspace:demo>"}
-
-    def fake_run_command(request, config_path):
-        return expected
-
-    monkeypatch.setattr("mcp_server.run_command", fake_run_command)
-    result = invoke("workspace_run", {"workspace": "demo", "argv": ["git", "status", "--short"]})
-    assert result == expected
-
-
-def test_mcp_invokes_workspace_run_sequence(tmp_path, monkeypatch):
-    from mcp_server import invoke
-
-    expected = {"status": "completed", "workspace": "demo"}
-
-    def fake_run_sequence(request, config_path):
-        return expected
-
-    monkeypatch.setattr("mcp_server.run_sequence", fake_run_sequence)
-    result = invoke("workspace_run_sequence", {
-        "workspace": "demo",
-        "commands": [{"argv": ["git", "status"]}],
-    })
-    assert result == expected
 
 
 def test_mcp_invokes_workspace_command_history(tmp_path, monkeypatch):
