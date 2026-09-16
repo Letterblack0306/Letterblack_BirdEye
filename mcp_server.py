@@ -535,6 +535,26 @@ def _ensure_roots_reconciled(roots: list[str] | tuple[str, ...] | set[str]) -> N
             reconcile_roots(ctx, [root])
         _reconciled_roots.add(root)
 
+
+def _reconcile_eyes_workspace(roots: list[str] | tuple[str, ...] | set[str] | None = None) -> None:
+    """Run the existing EYES source reconciliation and query replay owner."""
+    from eye_database import sync_all
+    from eye_query import project_pending_changes
+
+    ctx = _load_ctx()
+    workspace_roots = {
+        root.name for root in getattr(ctx, "roots", ())
+        if getattr(root, "root_class", "workspace") == "workspace"
+    }
+    selected = workspace_roots if roots is None else {str(root).strip() for root in roots if str(root).strip()}
+    unknown = selected - workspace_roots
+    if unknown:
+        raise GovernanceError(f"Unknown workspace roots: {sorted(unknown)}")
+    if not selected:
+        return
+    sync_all(roots=selected)
+    project_pending_changes("workspace")
+
 def _load_ctx() -> "Context":
     if Context is None:
         raise GovernanceError("agent module is required")
@@ -1083,7 +1103,9 @@ def birdeye_search(query: str, max_results: int = 25, extensions: str | None = N
         # EYES query databases are already migrated and domain-separated. Do
         # not invoke the legacy reconciliation path when that projection is
         # available; reconciliation would write the old mixed workspace.db.
-        if roots_list and not (EYE_DATABASE_DIR / "eye_workspace_query_01.db").exists():
+        if (EYE_DATABASE_DIR / "eye_workspace_query_01.db").exists():
+            _reconcile_eyes_workspace(roots_list)
+        elif roots_list:
             _ensure_roots_reconciled(roots_list)
         return search_workspace(
             _load_ctx(),

@@ -295,12 +295,19 @@ def record_file_event(path: str | Path, event: str = "modified", max_bytes: int 
         conn.close()
 
 
-def sync_all(max_bytes: int = 5_000_000) -> dict[str, Any]:
-    """Index all configured files into the three EYES database families."""
+def sync_all(max_bytes: int = 5_000_000, roots: set[str] | None = None) -> dict[str, Any]:
+    """Reconcile configured files into the three EYES database families.
+
+    The filesystem walk is authoritative for the current source root.  Files
+    present in the canonical ledger but absent from that walk are recorded as
+    deletions so the normal change journal/projection path removes them.
+    """
     config = load_config()
     counts = {domain: 0 for domain in _DOMAINS}
     for root in config["roots"]:
         domain = "memory" if root.get("id") == "memory" else "skills" if root.get("id") == "skills" else "workspace"
+        if roots is not None and (domain != "workspace" or str(root.get("id")) not in roots):
+            continue
         candidates = []
         if domain == "memory":
             candidates = [(str(s.get("path")), str(s.get("id"))) for s in root.get("sources", [])]
@@ -310,10 +317,28 @@ def sync_all(max_bytes: int = 5_000_000) -> dict[str, Any]:
             source_root = Path(source_path)
             if not source_root.is_dir():
                 continue
+            seen: set[str] = set()
             for path in source_root.rglob("*"):
                 if path.is_file():
+                    seen.add(path.resolve().relative_to(source_root.resolve()).as_posix())
                     result = record_file_event(path, "initial", max_bytes)
                     if result.get("ok") and result.get("action") == "indexed":
+                        counts[domain] += 1
+            db_path, _number = _next_database(domain)
+            conn = _connect(db_path)
+            try:
+                indexed = conn.execute(
+                    "SELECT relative_path, physical_path FROM files "
+                    "WHERE domain=? AND source_id=?",
+                    (domain, _source_id),
+                ).fetchall()
+            finally:
+                conn.close()
+            for row in indexed:
+                relative = str(row["relative_path"]).replace("\\", "/")
+                if relative not in seen:
+                    result = record_file_event(Path(row["physical_path"]), "deleted", max_bytes)
+                    if result.get("ok") and result.get("action") == "deleted":
                         counts[domain] += 1
     return {"ok": True, "indexed": counts, "database_dir": str(EYE_DATA_DIR)}
 
