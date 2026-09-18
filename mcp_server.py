@@ -1135,66 +1135,51 @@ def serve_stdio() -> None:
     watcher = None
     process_lease = _McpProcessLease()
     reader_queue: Queue[str | None] = Queue()
-    idle_timeout = max(
-        5,
-        int(os.environ.get("BIRDEYE_MCP_IDLE_SECONDS", str(DEFAULT_IDLE_TIMEOUT_SECONDS))),
-    )
 
     def read_stdin() -> None:
-        """Read the blocking stdio stream without preventing idle shutdown."""
+        """Read the blocking stdio stream until the client closes it."""
         try:
             for line in sys.stdin:
                 reader_queue.put(line)
         finally:
             reader_queue.put(None)
 
-    try:
-        if not process_lease.acquire():
-            # The process lease is only a diagnostic ownership marker.  Each
-            # MCP client needs its own stdio transport, while the watcher has
-            # its separate singleton lease below.  A second client must stay
-            # available even when another client already owns this marker.
+    def start_background_watcher() -> None:
+        nonlocal watcher
+        try:
+            if not process_lease.acquire():
+                print(
+                    "[birdeye] another BirdEye MCP process owns the diagnostic marker; continuing without it",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            watcher = start_watcher(_load_ctx())
+            if watcher is None:
+                print(
+                    "[birdeye] incremental watcher already owned by another BirdEye MCP process",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        except (GovernanceError, OSError, RuntimeError, ValueError) as exc:
             print(
-                "[birdeye] another BirdEye MCP process owns the diagnostic marker; continuing without it",
+                f"[birdeye] incremental watcher unavailable: {exc}",
                 file=sys.stderr,
                 flush=True,
             )
-        watcher = start_watcher(_load_ctx())
-        if watcher is None:
-            print("[birdeye] incremental watcher already owned by another BirdEye MCP process", file=sys.stderr, flush=True)
-    except (GovernanceError, OSError, RuntimeError, ValueError) as exc:
-        # MCP remains usable for inspection/search even if incremental watch
-        # setup is unavailable; freshness-verified search remains explicit.
-        print(f"[birdeye] incremental watcher unavailable: {exc}", file=sys.stderr, flush=True)
 
     try:
         reader = threading.Thread(target=read_stdin, name="birdeye-stdio-reader", daemon=True)
         reader.start()
-        last_activity = time.monotonic()
+        watcher_started = False
+
         while True:
             try:
-                remaining = idle_timeout - (time.monotonic() - last_activity)
-                if remaining <= 0:
-                    print(
-                        f"[birdeye] idle timeout reached ({idle_timeout}s); shutting down",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                    break
-                line = reader_queue.get(timeout=remaining)
+                line = reader_queue.get()
                 if line is None:
                     break
-                last_activity = time.monotonic()
                 message = json.loads(line.strip())
             except (json.JSONDecodeError, ValueError):
                 continue
-            except Empty:
-                print(
-                    f"[birdeye] idle timeout reached ({idle_timeout}s); shutting down",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                break
             except KeyboardInterrupt:
                 break
 
@@ -1212,15 +1197,18 @@ def serve_stdio() -> None:
                         "serverInfo": {"name": "birdeye", "version": "0.1.0"},
                     },
                 })
+                if not watcher_started:
+                    watcher_started = True
+                    threading.Thread(
+                        target=start_background_watcher,
+                        name="birdeye-watcher-startup",
+                        daemon=True,
+                    ).start()
                 continue
 
             if method == "notifications/initialized":
                 continue
 
-            # MCP session lifecycle is host-controlled.  Cline should send
-            # `shutdown` (and then `notifications/exit`) when the agent task
-            # is complete; EOF remains a supported fallback.  Returning the
-            # response before leaving lets the finally block stop the watcher.
             if method == "shutdown":
                 if request_id is not None:
                     _send({"jsonrpc": "2.0", "id": request_id, "result": {}})
@@ -1254,7 +1242,6 @@ def serve_stdio() -> None:
                         })
                     continue
                 result = invoke(name, arguments)
-                # Missing `ok` is allowed for successful read-only payloads.
                 is_error = _mcp_result_is_error(result)
                 if request_id is not None:
                     _send({
@@ -1281,7 +1268,6 @@ def serve_stdio() -> None:
                 _memory_service.close()
             finally:
                 globals()["_memory_service"] = None
-
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="BirdEye MCP surface (native stdio transport; --args diagnostic harness)")
