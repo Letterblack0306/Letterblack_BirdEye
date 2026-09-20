@@ -478,6 +478,7 @@ _TOOL_DEFINITIONS = [
     _MEMORY_SOURCES_SCHEMA,
     _SKILLS_SCHEMA,
     _WORKSPACE_IDENTITY_SCHEMA,
+    _WORKSPACE_COMMAND_HISTORY_SCHEMA,
     _REVISION_STATUS_SCHEMA,
     _LOCAL_PROJECTS_SCHEMA,
 ]
@@ -500,6 +501,7 @@ _TOOL_REGISTRY = {
     "memory_sources": ("conversation_id", "node_id", "memory_id"),
     "skills": ("operation", "prefix", "rel", "max_bytes"),
     "workspace_identity": ("workspace",),
+    "workspace_command_history": ("limit", "workspace"),
     "revision_status": ("workspace",),
     "local_projects": ("project",),
 }
@@ -690,6 +692,20 @@ def _skills_fetch(rel: str, max_bytes: int) -> dict[str, Any]:
     }
 
 
+def _skills_catalog_score(rel: str, text: str, terms: list[str]) -> int:
+    if Path(rel).name.lower() != "skill.md":
+        return 0
+    lines = text.splitlines()
+    frontmatter_lines: list[str] = []
+    if lines and lines[0].lstrip("\ufeff") == "---":
+        for line in lines[1:]:
+            if line == "---":
+                break
+            frontmatter_lines.append(line)
+    searchable = (rel + "\n" + "\n".join(frontmatter_lines)).lower()
+    return sum(searchable.count(term) for term in terms)
+
+
 def _skills_query(
     query: str,
     prefix: str,
@@ -713,16 +729,32 @@ def _skills_query(
     finally:
         conn.close()
     candidate_count = len(rows)
+    loaded_rows = []
+    catalog_candidates = []
     for rel, digest in rows:
-        text = _skills_safe_path(rel).read_text(encoding="utf-8", errors="replace")
-        lines = text.splitlines()
-        lines_per_chunk = max(1, chunk_chars // 80)
-        for start in range(0, len(lines), lines_per_chunk):
-            chunk = "\n".join(lines[start : start + lines_per_chunk])
-            lowered = chunk.lower()
-            score = sum(lowered.count(term) for term in terms)
-            if score:
-                candidates.append((score, rel, digest, start + 1, chunk[:chunk_chars]))
+        skill_text = _skills_safe_path(rel).read_text(encoding="utf-8", errors="replace")
+        loaded_rows.append((rel, digest, skill_text))
+        catalog_score = _skills_catalog_score(rel, skill_text, terms)
+        if catalog_score:
+            catalog_candidates.append(
+                (catalog_score, rel, digest, 1, skill_text[:chunk_chars])
+            )
+
+    candidates = []
+    if catalog_candidates:
+        candidates = catalog_candidates
+    else:
+        for rel, digest, skill_text in loaded_rows:
+            lines = skill_text.splitlines()
+            lines_per_chunk = max(1, chunk_chars // 80)
+            for start in range(0, len(lines), lines_per_chunk):
+                chunk = "\n".join(lines[start : start + lines_per_chunk])
+                lowered = chunk.lower()
+                score = sum(lowered.count(term) for term in terms)
+                if score:
+                    candidates.append(
+                        (score, rel, digest, start + 1, chunk[:chunk_chars])
+                    )
     candidates.sort(key=lambda item: (-item[0], item[1], item[3]))
     # Content identity is already supplied by the BirdEye SHA index. Collapse
     # duplicate content after ranking so the preferred (highest score, then
@@ -912,6 +944,12 @@ def invoke(tool: str, params: dict[str, Any]) -> dict[str, Any]:
             return _skills_call(**params)
         if tool == "workspace_identity":
             return workspace_identity(params.get("workspace"))
+        if tool == "workspace_command_history":
+            return command_history(
+                CONFIG_PATH,
+                limit=int(params.get("limit", 50)),
+                workspace=params.get("workspace"),
+            )
         if tool == "revision_status":
             return revision_status(params.get("workspace"))
         if tool == "local_projects":
