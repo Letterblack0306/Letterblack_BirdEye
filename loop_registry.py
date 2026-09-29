@@ -86,6 +86,9 @@ class LoopRegistry:
         cdp_endpoint: str | None = None,
         page_id: str | None = None,
         workspace: str | None = None,
+        relay_host: str | None = None,
+        relay_port: int | None = None,
+        relay_tab_id: str | None = None,
         status: str = "waiting",
     ) -> dict[str, Any]:
         with self._lock:
@@ -99,6 +102,9 @@ class LoopRegistry:
                 "cdp_endpoint": cdp_endpoint or None,
                 "page_id": page_id or None,
                 "workspace": workspace or None,
+                "relay_host": relay_host or None,
+                "relay_port": int(relay_port) if relay_port is not None else None,
+                "relay_tab_id": relay_tab_id or None,
                 "status": self._validate_status(status),
                 "last_message_hash": None,
                 "last_action_id": None,
@@ -150,6 +156,9 @@ class LoopRegistry:
                 "cdp_endpoint",
                 "page_id",
                 "workspace",
+                "relay_host",
+                "relay_port",
+                "relay_tab_id",
                 "last_message_hash",
                 "last_action_id",
             ):
