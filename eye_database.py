@@ -295,6 +295,65 @@ def record_file_event(path: str | Path, event: str = "modified", max_bytes: int 
         conn.close()
 
 
+def verify_live_hash(path: str | Path, claimed_sha256: str, max_bytes: int = 5_000_000) -> dict[str, Any]:
+    """Refresh one configured file and compare its live SHA-256 with a claimed hash."""
+    physical = Path(path).resolve()
+    source = _source_for(physical)
+    if source is None:
+        return {"ok": False, "error": "unconfigured_path", "path": str(physical)}
+    if not physical.is_file():
+        record_file_event(physical, "deleted", max_bytes)
+        return {
+            "ok": True,
+            "match": False,
+            "freshness": "live_refreshed",
+            "path": str(physical),
+            "exists": False,
+            "claimed_sha256": str(claimed_sha256 or "").lower(),
+            "actual_sha256": None,
+        }
+
+    refreshed = record_file_event(physical, "verified", max_bytes)
+    domain, source_id, _agent, source_root = source
+    relative = physical.relative_to(source_root).as_posix()
+    db_path, _number = _next_database(domain)
+    conn = _connect(db_path)
+    try:
+        current = conn.execute(
+            "SELECT sha256,hash_status,last_seen_at,last_generation FROM files "
+            "WHERE domain=? AND source_id=? AND relative_path=?",
+            (domain, source_id, relative),
+        ).fetchone()
+        latest_change = conn.execute(
+            "SELECT generation,event,old_sha256,new_sha256,observed_at "
+            "FROM changes WHERE domain=? AND source_id=? AND relative_path=? "
+            "ORDER BY id DESC LIMIT 1",
+            (domain, source_id, relative),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    actual = current["sha256"] if current else refreshed.get("sha256")
+    claimed = str(claimed_sha256 or "").strip().lower()
+    match = bool(actual) and claimed == str(actual).lower()
+    return {
+        "ok": True,
+        "match": match,
+        "freshness": "live_refreshed",
+        "domain": domain,
+        "source_id": source_id,
+        "path": relative,
+        "physical_path": str(physical),
+        "exists": True,
+        "claimed_sha256": claimed,
+        "actual_sha256": actual,
+        "hash_status": current["hash_status"] if current else refreshed.get("hash_status"),
+        "observed_at": current["last_seen_at"] if current else _now(),
+        "generation": current["last_generation"] if current else None,
+        "latest_change": dict(latest_change) if latest_change else None,
+    }
+
+
 def sync_all(max_bytes: int = 5_000_000, roots: set[str] | None = None) -> dict[str, Any]:
     """Reconcile configured files into the three EYES database families.
 
