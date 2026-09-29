@@ -60,6 +60,14 @@ class RelayState:
             self.commands[command_id] = command
             return command.copy()
 
+    def next_for_tab(self, tab_id: str) -> list[dict[str, Any]]:
+        with self.lock:
+            return [
+                command.copy()
+                for command in self.commands.values()
+                if command["tab_id"] == tab_id and command["status"] == "queued"
+            ]
+
     def claim_for_tab(self, tab_id: str) -> dict[str, Any] | None:
         with self.lock:
             for command in self.commands.values():
