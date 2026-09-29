@@ -80,16 +80,6 @@
       "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
     },
     {
-      "id": "lbe-tui-lab",
-      "path": "C:\\LBE-TUI-Lab",
-      "class": "workspace",
-      "enabled": true,
-      "index": true,
-      "hash": "sha256",
-      "git": true,
-      "exclusions": [".git", "node_modules", "dist", "build", "coverage"]
-    },
-    {
       "id": "cep-developer",
       "path": "G:\\Developments\\00_CEP_Developer",
       "class": "workspace",
