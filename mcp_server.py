@@ -28,6 +28,7 @@ from workspace_bridge import (
     utc_now,
 )
 from workspace_identity import revision_status, workspace_identity
+from eye_database import verify_live_hash
 from birdeye_watcher import start_watcher, stop_watcher
 
 
@@ -460,11 +461,27 @@ def local_projects(project: str | None = None) -> dict[str, Any]:
     }
 
 
+_BIRDEYE_VERIFY_HASH_SCHEMA = {
+    "name": "birdeye_verify_hash",
+    "description": "Independently refresh one configured file from the live filesystem and compare its SHA-256 with an agent-supplied claim. Returns workspace/path identity, live hash, freshness, generation, and latest old->new hash transition.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Configured physical file path to verify."},
+            "sha256": {"type": "string", "description": "Agent-supplied SHA-256 claim to compare against the refreshed live file."}
+        },
+        "required": ["path", "sha256"],
+        "additionalProperties": False
+    }
+}
+
+
 _TOOL_DEFINITIONS = [
     _KNOWLEDGE_ROUTE_SCHEMA,
     _KNOWLEDGE_READ_SCHEMA,
     _BIRDEYE_SEARCH_SCHEMA,
     _BIRDEYE_INSPECT_SCHEMA,
+    _BIRDEYE_VERIFY_HASH_SCHEMA,
     _BIRDEYE_ROOTS_SCHEMA,
     _BIRDEYE_STATUS_SCHEMA,
     _EYES_REBUILD_SCHEMA,
@@ -488,6 +505,7 @@ _TOOL_REGISTRY = {
     "knowledge_read": ("reference",),
     "birdeye_search": ("query", "max_results", "extensions", "roots", "path_prefix", "verify_freshness"),
     "birdeye_inspect": ("path", "start_line", "end_line"),
+    "birdeye_verify_hash": ("path", "sha256"),
     "birdeye_roots": (),
     "birdeye_status": (),
     "eyes_rebuild": ("domain",),
@@ -882,6 +900,11 @@ def invoke(tool: str, params: dict[str, Any]) -> dict[str, Any]:
                 params.get("path", ""),
                 start_line=params.get("start_line"),
                 end_line=params.get("end_line"),
+            )
+        if tool == "birdeye_verify_hash":
+            return verify_live_hash(
+                params.get("path", ""),
+                params.get("sha256", ""),
             )
         if tool == "birdeye_roots":
             return birdeye_roots()
