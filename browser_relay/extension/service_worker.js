@@ -33,3 +33,10 @@ chrome.tabs.onUpdated.addListener((_tabId, _change, tab) => register(tab));
 chrome.tabs.onRemoved.addListener(tabId => { post("/tabs/unregister", {tab_id:String(tabId)}).catch(() => {}); });
 ensureAlarm();
 poll();
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "BIRDEYE_GET_TAB_ID" && sender.tab?.id != null) {
+    sendResponse({tab_id: String(sender.tab.id)});
+  }
+  return true;
+});

@@ -60,12 +60,14 @@ class RelayState:
             self.commands[command_id] = command
             return command.copy()
 
-    def next_for_tab(self, tab_id: str) -> list[dict[str, Any]]:
+    def claim_for_tab(self, tab_id: str) -> dict[str, Any] | None:
         with self.lock:
-            return [
-                c.copy() for c in self.commands.values()
-                if c["tab_id"] == tab_id and c["status"] == "queued"
-            ]
+            for command in self.commands.values():
+                if command["tab_id"] == tab_id and command["status"] == "queued":
+                    command["status"] = "dispatched"
+                    command["dispatched_at"] = time.time()
+                    return command.copy()
+            return None
 
     def complete(self, command_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self.lock:
@@ -135,6 +137,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, {"ok": True})
             elif parsed.path == "/commands/next":
                 self._json(200, {"ok": True, "commands": STATE.next_for_tab(str(payload.get("tab_id", "")))})
+            elif parsed.path == "/commands/claim":
+                command = STATE.claim_for_tab(str(payload.get("tab_id", "")))
+                self._json(200, {"ok": True, "command": command})
             elif parsed.path == "/commands/complete":
                 self._json(200, STATE.complete(str(payload.get("command_id", "")), payload.get("result") or {}))
             elif parsed.path == "/read":
