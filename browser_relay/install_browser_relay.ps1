@@ -7,6 +7,7 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Extension = Join-Path $Root "extension"
 $Log = Join-Path $Root "relay-startup.log"
+$ErrLog = Join-Path $Root "relay-startup.err.log"
 
 Write-Host "Starting BirdEye browser relay on 127.0.0.1:$Port"
 Write-Host "Chrome remote debugging/CDP is NOT used."
@@ -25,11 +26,10 @@ if ($python.Name -eq "py.exe") {
   $arguments = @("-u", "$Root\server.py", "--host", "127.0.0.1", "--port", "$Port")
 }
 
-if (Test-Path $Log) {
-  Remove-Item $Log -Force
-}
+if (Test-Path $Log) { Remove-Item $Log -Force }
+if (Test-Path $ErrLog) { Remove-Item $ErrLog -Force }
 
-$process = Start-Process -FilePath $python.Source -ArgumentList $arguments -WorkingDirectory $Root -RedirectStandardOutput $Log -RedirectStandardError $Log -PassThru
+$process = Start-Process -FilePath $python.Source -ArgumentList $arguments -WorkingDirectory $Root -RedirectStandardOutput $Log -RedirectStandardError $ErrLog -PassThru
 
 $deadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
 $healthy = $false
@@ -51,7 +51,9 @@ while ((Get-Date) -lt $deadline) {
 
 if (-not $healthy) {
   $logText = if (Test-Path $Log) { Get-Content $Log -Raw } else { "" }
-  $details = "Startup log:" + [Environment]::NewLine + $logText
+  $errText = if (Test-Path $ErrLog) { Get-Content $ErrLog -Raw } else { "" }
+  $details = "Startup log:" + [Environment]::NewLine + $logText + [Environment]::NewLine + "Startup error log:" + [Environment]::NewLine + $errText
+  $details = "Startup log:" + [Environment]::NewLine + $logText + [Environment]::NewLine + "Startup error log:" + [Environment]::NewLine + $errText
   if ($process.HasExited) {
     throw "Relay process exited with code $($process.ExitCode)." + [Environment]::NewLine + $details
   }
