@@ -82,6 +82,47 @@ _LOOP_TOOLS = [
             "required": ["loop_id"],
         },
     },
+    {
+        "name": "workspace_run",
+        "description": "Execute one governed local argv command through BirdEye's existing workspace execution/evidence path. No browser debugging or CDP is required.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workspace": {"type": "string", "description": "Configured BirdEye workspace ID."},
+                "argv": {"type": "array", "items": {"type": "string"}, "description": "Command and arguments as an argv array; free-form shell wrappers remain subject to BirdEye command policy."},
+                "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 300},
+                "request_id": {"type": "string"},
+                "task_id": {"type": "string"},
+            },
+            "required": ["workspace", "argv"],
+        },
+    },
+    {
+        "name": "workspace_run_sequence",
+        "description": "Execute ordered governed local argv commands through BirdEye's existing workspace execution/evidence path. No browser debugging or CDP is required.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workspace": {"type": "string", "description": "Configured BirdEye workspace ID."},
+                "commands": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "argv": {"type": "array", "items": {"type": "string"}},
+                            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 300},
+                            "step_id": {"type": "string"},
+                        },
+                        "required": ["argv"],
+                    },
+                },
+                "stop_on_failure": {"type": "boolean"},
+                "request_id": {"type": "string"},
+                "task_id": {"type": "string"},
+            },
+            "required": ["workspace", "commands"],
+        },
+    },
 ]
 
 _LOOP_NAMES = {tool["name"] for tool in _LOOP_TOOLS}
@@ -122,6 +163,12 @@ def invoke(tool: str, params: dict) -> dict:
         )
     if tool == "loop_remove":
         return _LOOP_REGISTRY.remove(str(params.get("loop_id", "")))
+    if tool == "workspace_run":
+        request = bird.RunRequest.from_mapping(params)
+        return bird.run_command(request, bird.CONFIG_PATH)
+    if tool == "workspace_run_sequence":
+        request = bird.RunSequenceRequest.from_mapping(params)
+        return bird.run_sequence(request, bird.CONFIG_PATH)
     return bird.invoke(tool, params)
 
 
