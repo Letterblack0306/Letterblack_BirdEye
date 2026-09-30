@@ -478,6 +478,8 @@ _TOOL_DEFINITIONS = [
     _MEMORY_SOURCES_SCHEMA,
     _SKILLS_SCHEMA,
     _WORKSPACE_IDENTITY_SCHEMA,
+    _WORKSPACE_RUN_SCHEMA,
+    _WORKSPACE_RUN_SEQUENCE_SCHEMA,
     _WORKSPACE_COMMAND_HISTORY_SCHEMA,
     _REVISION_STATUS_SCHEMA,
     _LOCAL_PROJECTS_SCHEMA,
@@ -501,6 +503,8 @@ _TOOL_REGISTRY = {
     "memory_sources": ("conversation_id", "node_id", "memory_id"),
     "skills": ("operation", "prefix", "rel", "max_bytes"),
     "workspace_identity": ("workspace",),
+    "workspace_run": ("workspace", "argv", "timeout_seconds", "request_id", "task_id"),
+    "workspace_run_sequence": ("workspace", "commands", "stop_on_failure", "request_id", "task_id"),
     "workspace_command_history": ("limit", "workspace"),
     "revision_status": ("workspace",),
     "local_projects": ("project",),
@@ -944,6 +948,12 @@ def invoke(tool: str, params: dict[str, Any]) -> dict[str, Any]:
             return _skills_call(**params)
         if tool == "workspace_identity":
             return workspace_identity(params.get("workspace"))
+        if tool == "workspace_run":
+            request = RunRequest.from_mapping(params)
+            return run_command(request, CONFIG_PATH)
+        if tool == "workspace_run_sequence":
+            request = RunSequenceRequest.from_mapping(params)
+            return run_sequence(request, CONFIG_PATH)
         if tool == "workspace_command_history":
             return command_history(
                 CONFIG_PATH,
