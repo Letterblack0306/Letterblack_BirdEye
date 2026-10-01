@@ -20,6 +20,7 @@ COMMENT_PREFIX = "/birdeye "
 DEFAULT_TIMEOUT_SECONDS = 120
 MAX_TIMEOUT_SECONDS = 300
 MAX_OUTPUT_CHARS = 60_000
+CIRCUIT_FAILURE_THRESHOLD = 2
 
 
 class BridgeError(RuntimeError):
@@ -127,8 +128,9 @@ def load_workspaces(config_path: Path) -> tuple[Workspace, ...]:
         name = _required_text(item.get(root_name_key), f"{root_name_key}").strip().lower()
         raw_path = _required_text(item.get("path"), f"roots[{name}].path")
         path = Path(raw_path).expanduser().resolve()
-        if not path.is_dir():
-            raise BridgeError(f"Registered workspace does not exist: {path}")
+        # Unrelated roots may live on drives not present on this machine
+        # (removable/mapped drives). They must not block execution in the
+        # requested workspace; existence is enforced in resolve_workspace.
         path_key = str(path).casefold()
         if name in seen_names:
             raise BridgeError(f"Duplicate workspace name: {name}")
@@ -144,6 +146,8 @@ def resolve_workspace(config_path: Path, name: str) -> Workspace:
     normalized = name.strip().lower()
     for workspace in load_workspaces(config_path):
         if workspace.name == normalized:
+            if not workspace.path.is_dir():
+                raise BridgeError(f"Registered workspace does not exist: {workspace.path}")
             return workspace
     available = ", ".join(item.name for item in load_workspaces(config_path))
     raise BridgeError(f"Unknown workspace {name!r}. Registered workspaces: {available}")
@@ -304,10 +308,13 @@ class RunRequest:
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
     request_id: str | None = None
     task_id: str | None = None
+    intent: str | None = None
+    capability: str | None = None
+    context_evidence: dict[str, Any] | None = None
 
     @classmethod
     def from_mapping(cls, value: dict[str, Any]) -> "RunRequest":
-        allowed = {"workspace", "argv", "timeout_seconds", "request_id", "task_id"}
+        allowed = {"workspace", "argv", "timeout_seconds", "request_id", "task_id", "intent", "capability", "context_evidence"}
         extra = sorted(set(value) - allowed)
         if extra:
             raise BridgeError(f"Unsupported request fields: {', '.join(extra)}")
@@ -326,7 +333,18 @@ class RunRequest:
         task_id = value.get("task_id")
         if task_id is not None:
             task_id = _required_text(task_id, "task_id")
-        return cls(workspace=workspace, argv=tuple(raw_argv), timeout_seconds=timeout, request_id=request_id, task_id=task_id)
+        intent = value.get("intent")
+        if intent is not None:
+            intent = _required_text(intent, "intent")
+        capability = value.get("capability")
+        if capability is not None:
+            capability = _required_text(capability, "capability")
+        context_evidence = value.get("context_evidence")
+        if context_evidence is not None and not isinstance(context_evidence, dict):
+            raise BridgeError("context_evidence must be an object")
+        return cls(workspace=workspace, argv=tuple(raw_argv), timeout_seconds=timeout, request_id=request_id,
+                   task_id=task_id, intent=intent, capability=capability,
+                   context_evidence=context_evidence)
 
 
 @dataclass(frozen=True)
@@ -362,10 +380,13 @@ class RunSequenceRequest:
     stop_on_failure: bool = True
     request_id: str | None = None
     task_id: str | None = None
+    intent: str | None = None
+    capability: str | None = None
+    context_evidence: dict[str, Any] | None = None
 
     @classmethod
     def from_mapping(cls, value: dict[str, Any]) -> "RunSequenceRequest":
-        allowed = {"workspace", "commands", "stop_on_failure", "request_id", "task_id"}
+        allowed = {"workspace", "commands", "stop_on_failure", "request_id", "task_id", "intent", "capability", "context_evidence"}
         extra = sorted(set(value) - allowed)
         if extra:
             raise BridgeError(f"Unsupported request fields: {', '.join(extra)}")
@@ -381,7 +402,18 @@ class RunSequenceRequest:
         task_id = value.get("task_id")
         if task_id is not None:
             task_id = _required_text(task_id, "task_id")
-        return cls(workspace=workspace, commands=commands, stop_on_failure=stop_on_failure, request_id=request_id, task_id=task_id)
+        intent = value.get("intent")
+        if intent is not None:
+            intent = _required_text(intent, "intent")
+        capability = value.get("capability")
+        if capability is not None:
+            capability = _required_text(capability, "capability")
+        context_evidence = value.get("context_evidence")
+        if context_evidence is not None and not isinstance(context_evidence, dict):
+            raise BridgeError("context_evidence must be an object")
+        return cls(workspace=workspace, commands=commands, stop_on_failure=stop_on_failure, request_id=request_id,
+                   task_id=task_id, intent=intent, capability=capability,
+                   context_evidence=context_evidence)
 
 
 def _is_shell_wrapper(argv: tuple[str, ...]) -> bool:
@@ -489,6 +521,10 @@ def _command_allowed(argv: tuple[str, ...], workspace_path: Path) -> tuple[bool,
         allowed_ops = {"status", "diff", "log", "show", "branch", "rev-parse", "ls-files", "grep", "worktree", "fetch", "add", "commit"}
         if operation in allowed_ops:
             return True, f"git {operation}"
+        # Pull is only allowed in its bounded fast-forward form so governed
+        # execution can sync a workspace without merge/rebase side effects.
+        if operation == "pull" and "--ff-only" in [a.lower() for a in argv]:
+            return True, "git pull --ff-only"
         return False, f"unsupported git operation: {operation}"
     if executable in {"npm", "npm.cmd", "npm.exe"}:
         if len(argv) > 1 and argv[1] == "run":
@@ -595,6 +631,129 @@ def _read_journal(config_path: Path, *, limit: int = 200) -> list[dict[str, Any]
     except OSError:
         pass
     return records[-limit:]
+
+
+def _circuit_path(config_path: Path) -> Path:
+    """Return the durable, workspace-local circuit state path."""
+    return _journal_path(config_path).with_name("workspace_circuits.json")
+
+
+def _intent_for(argv: tuple[str, ...], explicit: str | None = None) -> str:
+    if explicit:
+        return explicit.strip().lower()
+    return " ".join(argv[:3]).strip().lower()
+
+
+def _failure_class(result: dict[str, Any]) -> str | None:
+    if result.get("timed_out"):
+        return "timeout"
+    exit_code = result.get("exit_code")
+    if exit_code not in (None, 0):
+        return "process_failure"
+    if result.get("ok") is False:
+        return "execution_failure"
+    return None
+
+
+def _load_circuits(config_path: Path) -> dict[str, dict[str, Any]]:
+    try:
+        value = json.loads(_circuit_path(config_path).read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_circuits(config_path: Path, circuits: dict[str, dict[str, Any]]) -> None:
+    path = _circuit_path(config_path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(json.dumps(circuits, sort_keys=True, indent=2), encoding="utf-8")
+        temporary.replace(path)
+    except OSError:
+        # Execution must not become unsafe merely because telemetry storage is unavailable.
+        pass
+
+
+def _authority_gate(
+    config_path: Path,
+    workspace: Workspace,
+    argv: tuple[str, ...],
+    *,
+    intent: str | None = None,
+    capability: str | None = None,
+    context_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Make the deterministic pre-execution decision for a command.
+
+    Read-only commands need no external context. Mutations require an explicit
+    capability and evidence naming the resolved workspace; BirdEye/GPT-K may
+    supply that evidence, but they are not the authority.
+    """
+    mutation = _is_mutating_command(argv)
+    resolved_intent = _intent_for(argv, intent)
+    circuit_key = f"{workspace.name}:{resolved_intent}"
+    circuits = _load_circuits(config_path)
+    circuit = circuits.get(circuit_key, {})
+    evidence_hash = hashlib.sha256(
+        json.dumps(context_evidence or {}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    # New provider evidence is a legitimate reconciliation point and permits
+    # a fresh bounded attempt for this intent.
+    if circuit.get("tripped") and circuit.get("evidence_hash") != evidence_hash and context_evidence:
+        circuits.pop(circuit_key, None)
+        _save_circuits(config_path, circuits)
+        circuit = {}
+    if circuit.get("tripped"):
+        raise BridgeError(
+            f"WORKSPACE_CIRCUIT_OPEN\n\nWorkspace: {workspace.name}\n"
+            f"Intent: {resolved_intent}\nFailure class: {circuit.get('failure_class', 'unknown')}\n"
+            "Reason: repeated failures without new runtime evidence"
+        )
+    if mutation:
+        if capability != "workspace.mutate":
+            raise BridgeError(
+                "WORKSPACE_CAPABILITY_REQUIRED\n\nMutation requires capability 'workspace.mutate' "
+                "and explicit runtime approval"
+            )
+        if not isinstance(context_evidence, dict) or context_evidence.get("workspace") not in {workspace.name, str(workspace.path)}:
+            raise BridgeError(
+                "WORKSPACE_CONTEXT_REQUIRED\n\nMutation requires context_evidence.workspace matching the resolved workspace"
+            )
+    return {
+        "authority": "lbe-runtime",
+        "decision": "ALLOW",
+        "workspace": workspace.name,
+        "intent": resolved_intent,
+        "mutation": mutation,
+        "capability": capability,
+        "context_evidence": bool(context_evidence),
+        "circuit_key": circuit_key,
+        "evidence_hash": evidence_hash,
+    }
+
+
+def _record_circuit_result(config_path: Path, gate: dict[str, Any], result: dict[str, Any]) -> None:
+    failure_class = _failure_class(result)
+    if not failure_class:
+        # A successful execution is new evidence and clears only this intent.
+        circuits = _load_circuits(config_path)
+        if gate.get("circuit_key") in circuits:
+            circuits.pop(gate["circuit_key"], None)
+            _save_circuits(config_path, circuits)
+        return
+    circuits = _load_circuits(config_path)
+    key = gate.get("circuit_key")
+    previous = circuits.get(key, {})
+    count = int(previous.get("count", 0)) + 1 if previous.get("failure_class") == failure_class else 1
+    circuits[key] = {
+        "count": count,
+        "failure_class": failure_class,
+        "tripped": count >= CIRCUIT_FAILURE_THRESHOLD,
+        "last_failure_at": utc_now(),
+        "evidence_hash": gate.get("evidence_hash"),
+    }
+    _save_circuits(config_path, circuits)
 
 
 
@@ -760,6 +919,14 @@ def run_command(request: RunRequest, config_path: Path) -> dict[str, Any]:
             raise BridgeError(f"path escapes workspace: {arg}")
 
     capture_mutation = _is_mutating_command(request.argv)
+    gate = _authority_gate(
+        config_path,
+        workspace,
+        request.argv,
+        intent=request.intent,
+        capability=request.capability,
+        context_evidence=request.context_evidence,
+    )
 
     from execution_evidence import ExecutionHistory
     history = ExecutionHistory(Path(__file__).resolve().parent / "state", workspace.name, request.argv)
@@ -772,6 +939,13 @@ def run_command(request: RunRequest, config_path: Path) -> dict[str, Any]:
         capture_mutation=capture_mutation,
         history=history,
     )
+    result["authority"] = gate
+    result["reconciliation"] = {
+        "performed": isinstance(result.get("execution_evidence"), dict),
+        "source": "runtime",
+        "changed": bool((result.get("execution_evidence") or {}).get("workspace_changed_by_command", False)),
+    }
+    _record_circuit_result(config_path, gate, result)
     evidence = result.get("execution_evidence") or {}
     if "command_hash" in evidence:
         result["execution_history"] = history.finalize(
@@ -801,6 +975,14 @@ def run_sequence(request: RunSequenceRequest, config_path: Path) -> dict[str, An
             if _path_escapes_workspace(workspace_path, arg):
                 raise BridgeError(f"path escapes workspace: {arg}")
         capture_mutation = _is_mutating_command(step.argv)
+        gate = _authority_gate(
+            config_path,
+            workspace,
+            step.argv,
+            intent=request.intent,
+            capability=request.capability,
+            context_evidence=request.context_evidence,
+        )
 
         if history is None:
             from execution_evidence import ExecutionHistory
@@ -817,6 +999,13 @@ def run_sequence(request: RunSequenceRequest, config_path: Path) -> dict[str, An
         )
         step_result["index"] = index
         step_result["step_id"] = step.step_id
+        step_result["authority"] = gate
+        step_result["reconciliation"] = {
+            "performed": isinstance(step_result.get("execution_evidence"), dict),
+            "source": "runtime",
+            "changed": bool((step_result.get("execution_evidence") or {}).get("workspace_changed_by_command", False)),
+        }
+        _record_circuit_result(config_path, gate, step_result)
         results.append(step_result)
 
         if step_result.get("exit_code", 0) != 0 or step_result.get("timed_out"):

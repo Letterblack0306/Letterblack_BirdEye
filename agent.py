@@ -309,7 +309,8 @@ class Context:
     @classmethod
     def load(cls) -> "Context":
         config = load_json(CONFIG_PATH)
-        if os.environ.get("BIRDEYE_EYES_ACTIVE", "1").strip().lower() not in {"0", "false", "no"}:
+        eyes_is_production_config = CONFIG_PATH.resolve() == (ROOT / "config.json").resolve()
+        if eyes_is_production_config and os.environ.get("BIRDEYE_EYES_ACTIVE", "1").strip().lower() not in {"0", "false", "no"}:
             try:
                 from eye import load_config as load_eye_config
                 config = load_eye_config()
@@ -1251,16 +1252,20 @@ def search_workspace(
     started = time.monotonic()
     connection = None
     try:
-        query_path = STATE_DIR.parent / "eye_Databa" / "eye_workspace_query_01.db"
-        if query_path.exists():
+        # The live watcher maintains workspace.db incrementally.  The current
+        # EYES projection is an auxiliary, rotated-shard projection and may
+        # not yet contain every configured root, so it must not displace the
+        # live workspace index while that index is available.
+        if legacy_storage_retired():
+            query_path = STATE_DIR.parent / "eye_Databa" / "eye_workspace_query_01.db"
+            if not query_path.exists():
+                raise GovernanceError(
+                    "EYES query projection is unavailable and legacy storage is retired"
+                )
             from eye_query import connect_query, initialize_workspace_query
             connection = connect_query("workspace")
             initialize_workspace_query(connection)
         else:
-            if legacy_storage_retired():
-                raise GovernanceError(
-                    "EYES query projection is unavailable and legacy storage is retired"
-                )
             connection = open_database()
         scanned = skipped = serial = 0
         candidates: list[tuple[int, int, dict[str, Any]]] = []

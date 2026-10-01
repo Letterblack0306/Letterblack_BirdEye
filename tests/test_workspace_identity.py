@@ -104,6 +104,22 @@ class WorkspaceIdentityTests(unittest.TestCase):
             self.assertTrue(revision["ok"])
             self.assertFalse(revision["git"]["is_repository"])
 
+    def test_git_status_timeout_returns_degraded_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(Path(tmp))
+
+            def fake_status(path: Path):
+                raise subprocess.TimeoutExpired(["git", "status"], 10)
+
+            with patch.object(identity.Context, "load", return_value=_context(repo)), patch.object(identity, "_status_porcelain", fake_status):
+                result = identity.workspace_identity()
+                revision = identity.revision_status()
+
+            for payload in (result, revision):
+                self.assertTrue(payload["ok"])
+                self.assertEqual("timeout", payload["status"])
+                self.assertEqual("git_status_timeout", payload["git"]["error"])
+
 
 if __name__ == "__main__":
     unittest.main()
