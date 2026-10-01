@@ -4,7 +4,7 @@
   "description": "EYES curated skills root and hash/index policy.",
   "root": {
     "id": "skills",
-    "path": "C:\\MCP Local\\Skills",
+    "path": "C:\\MCP Local\\Skills\\curated",
     "class": "knowledge",
     "enabled": true,
     "index": true,

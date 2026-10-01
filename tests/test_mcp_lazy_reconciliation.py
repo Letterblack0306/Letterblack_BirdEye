@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import birdeye_watcher
 import mcp_server
 
 
@@ -67,11 +68,12 @@ def test_birdeye_search_uses_migrated_query_database_without_legacy_reconcile(mo
         lambda ctx, query, **kwargs: events.append(("search", tuple(kwargs.get("roots") or ()))) or {"ok": True},
     )
     monkeypatch.setattr(mcp_server, "_load_ctx", lambda: object())
+    monkeypatch.setattr(mcp_server, "_reconcile_eyes_workspace", lambda roots: events.append(("eyes", tuple(roots or ()))) )
 
     result = mcp_server.birdeye_search("needle", roots="a")
 
     assert result["ok"] is True
-    assert events == [("search", ("a",))]
+    assert events == [("eyes", ("a",)), ("search", ("a",))]
 
 
 def test_birdeye_search_without_explicit_roots_does_not_global_reconcile(monkeypatch):
@@ -117,3 +119,17 @@ def test_birdeye_inspect_reconciles_path_root_before_inspect(monkeypatch):
         ("reconcile", ("a",)),
         ("inspect", "a/src/file.py", {"start_line": None, "end_line": None}),
     ]
+
+
+
+def test_watcher_ignores_birdeye_database_artifacts():
+    root = birdeye_watcher.agent.ROOT
+    assert birdeye_watcher._is_birdeye_database_artifact(
+        root / "eye_Databa" / "eye_skills_query_01.db-wal"
+    )
+    assert birdeye_watcher._is_birdeye_database_artifact(
+        root / "state" / "vectors" / "semantic.db"
+    )
+    assert not birdeye_watcher._is_birdeye_database_artifact(
+        root / "state" / "executions" / "receipt.json"
+    )
