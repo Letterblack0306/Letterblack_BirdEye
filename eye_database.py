@@ -295,6 +295,98 @@ def record_file_event(path: str | Path, event: str = "modified", max_bytes: int 
         conn.close()
 
 
+
+def verify_live_hash(path: str | Path, claimed_sha256: str) -> dict[str, Any]:
+    """Compare a configured file's live SHA-256 without mutating EYES state."""
+    physical = Path(path).resolve()
+    source = _source_for(physical)
+    if source is None:
+        return {"ok": False, "error": "unconfigured_path", "path": str(physical)}
+
+    claimed = str(claimed_sha256 or "").strip().lower()
+    if len(claimed) != 64 or any(ch not in "0123456789abcdef" for ch in claimed):
+        return {
+            "ok": False,
+            "error": "invalid_sha256",
+            "path": str(physical),
+            "claimed_sha256": claimed,
+        }
+
+    domain, source_id, _agent, source_root = source
+    relative = physical.relative_to(source_root).as_posix()
+    db_path, _number = _next_database(domain)
+    conn = _connect(db_path)
+    try:
+        current = conn.execute(
+            "SELECT sha256,hash_status,last_seen_at,last_generation FROM files "
+            "WHERE domain=? AND source_id=? AND relative_path=?",
+            (domain, source_id, relative),
+        ).fetchone()
+        latest_change = conn.execute(
+            "SELECT generation,event,old_sha256,new_sha256,observed_at "
+            "FROM changes WHERE domain=? AND source_id=? AND relative_path=? "
+            "ORDER BY id DESC LIMIT 1",
+            (domain, source_id, relative),
+        ).fetchone()
+        generation_row = conn.execute(
+            "SELECT value FROM meta WHERE key='canonical_generation'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not physical.is_file():
+        return {
+            "ok": True,
+            "match": False,
+            "freshness": "live_verified",
+            "domain": domain,
+            "source_id": source_id,
+            "path": relative,
+            "physical_path": str(physical),
+            "exists": False,
+            "indexed": current is not None,
+            "claimed_sha256": claimed,
+            "actual_sha256": None,
+            "hash_status": "missing",
+            "generation": int(generation_row[0]) if generation_row else 0,
+            "latest_change": dict(latest_change) if latest_change else None,
+        }
+
+    digest = hashlib.sha256()
+    try:
+        with physical.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except (OSError, PermissionError) as exc:
+        return {
+            "ok": False,
+            "error": "unreadable",
+            "message": f"{type(exc).__name__}: {exc}",
+            "path": str(physical),
+        }
+
+    actual = digest.hexdigest()
+    return {
+        "ok": True,
+        "match": claimed == actual,
+        "freshness": "live_verified",
+        "domain": domain,
+        "source_id": source_id,
+        "path": relative,
+        "physical_path": str(physical),
+        "exists": True,
+        "indexed": current is not None,
+        "claimed_sha256": claimed,
+        "actual_sha256": actual,
+        "hash_status": "hashed_live",
+        "indexed_sha256": current["sha256"] if current else None,
+        "indexed_hash_status": current["hash_status"] if current else None,
+        "indexed_last_seen_at": current["last_seen_at"] if current else None,
+        "generation": int(generation_row[0]) if generation_row else 0,
+        "latest_change": dict(latest_change) if latest_change else None,
+    }
+
+
 def sync_all(max_bytes: int = 5_000_000, roots: set[str] | None = None) -> dict[str, Any]:
     """Reconcile configured files into the three EYES database families.
 
