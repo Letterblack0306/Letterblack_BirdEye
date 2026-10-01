@@ -1537,12 +1537,12 @@ def birdeye_search(query: str, max_results: int = 25, extensions: str | None = N
     try:
         ext_list = [e.strip() for e in extensions.split(",") if e.strip()] if extensions else None
         roots_list = [r.strip() for r in roots.split(",") if r.strip()] if roots else None
-        # EYES query databases are already migrated and domain-separated. Do
-        # not invoke the legacy reconciliation path when that projection is
-        # available; reconciliation would write the old mixed workspace.db.
-        if (EYE_DATABASE_DIR / "eye_workspace_query_01.db").exists():
-            _reconcile_eyes_workspace(roots_list)
-        elif roots_list:
+        # Workspace search reads the EYES query projection when it exists.
+        # Do not recursively reconcile roots on this request path: a full
+        # reindex can exceed the MCP client timeout before any query runs.
+        # The MCP lifecycle watcher owns incremental freshness, while an
+        # explicit EYES rebuild remains available for maintenance.
+        if not (EYE_DATABASE_DIR / "eye_workspace_query_01.db").exists() and roots_list:
             _ensure_roots_reconciled(roots_list)
         return search_workspace(
             _load_ctx(),
