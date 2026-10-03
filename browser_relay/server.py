@@ -16,34 +16,31 @@ DEFAULT_PORT = 7726
 STATE_PATH = Path(__file__).resolve().parent / "state.json"
 
 
-def _set_clipboard_text(text: str) -> None:
+def _send_unicode_text(text: str) -> None:
     user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
-    CF_UNICODETEXT = 13
-    GMEM_MOVEABLE = 0x0002
-    data = (text + "\\x00").encode("utf-16-le")
-    hmem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
-    if not hmem:
-        raise RuntimeError("CLIPBOARD_ALLOC_FAILED")
-    ptr = kernel32.GlobalLock(hmem)
-    if not ptr:
-        kernel32.GlobalFree(hmem)
-        raise RuntimeError("CLIPBOARD_LOCK_FAILED")
-    try:
-        ctypes.memmove(ptr, data, len(data))
-    finally:
-        kernel32.GlobalUnlock(hmem)
-    if not user32.OpenClipboard(None):
-        kernel32.GlobalFree(hmem)
-        raise RuntimeError("CLIPBOARD_OPEN_FAILED")
-    try:
-        user32.EmptyClipboard()
-        if not user32.SetClipboardData(CF_UNICODETEXT, hmem):
-            kernel32.GlobalFree(hmem)
-            raise RuntimeError("CLIPBOARD_SET_FAILED")
-        hmem = None
-    finally:
-        user32.CloseClipboard()
+    INPUT_KEYBOARD = 1
+    KEYEVENTF_UNICODE = 0x0004
+    KEYEVENTF_KEYUP = 0x0002
+
+    class KEYBDINPUT(ctypes.Structure):
+        _fields_ = [("wVk", ctypes.c_ushort), ("wScan", ctypes.c_ushort),
+                    ("dwFlags", ctypes.c_ulong), ("time", ctypes.c_ulong),
+                    ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+
+    class INPUT(ctypes.Structure):
+        _fields_ = [("type", ctypes.c_ulong), ("ki", KEYBDINPUT)]
+
+    inputs = []
+    extra = ctypes.c_ulong(0)
+    for char in text:
+        code = ord(char)
+        inputs.append(INPUT(INPUT_KEYBOARD, KEYBDINPUT(0, code, KEYEVENTF_UNICODE, 0, ctypes.pointer(extra))))
+        inputs.append(INPUT(INPUT_KEYBOARD, KEYBDINPUT(0, code, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, 0, ctypes.pointer(extra))))
+    if inputs:
+        sent = user32.SendInput(len(inputs), (INPUT * len(inputs))(*inputs), ctypes.sizeof(INPUT))
+        if sent != len(inputs):
+            raise RuntimeError("UNICODE_INPUT_FAILED")
+
 
 
 def native_submit_chrome(window_title: str) -> dict[str, Any]:
@@ -76,7 +73,7 @@ def native_submit_chrome(window_title: str) -> dict[str, Any]:
         raise RuntimeError("CHROME_WINDOW_NOT_FOUND")
     if not user32.SetForegroundWindow(target):
         raise RuntimeError("CHROME_FOREGROUND_FAILED")
-    _set_clipboard_text(window_title)
+    _send_unicode_text(window_title)
     time.sleep(0.2)
     KEYUP = 0x0002
     VK_CONTROL, VK_SHIFT, VK_A, VK_V, VK_RETURN = 0x11, 0x10, 0x41, 0x56, 0x0D
