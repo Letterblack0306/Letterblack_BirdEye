@@ -18,14 +18,57 @@
 
   function findComposer() {
     return document.querySelector(
-      'textarea, [contenteditable="true"][role="textbox"], div[contenteditable="true"]'
+      'textarea:not([disabled]):not([readonly]), [contenteditable="true"][role="textbox"], [contenteditable="true"][data-lexical-editor="true"], [contenteditable="true"]'
     );
   }
 
   function findSendButton() {
-    return document.querySelector(
-      'button[data-testid="send-button"], button[aria-label*="Send" i], button[type="submit"]'
-    );
+    const selectors = [
+      'button[data-testid="send-button"]',
+      'button[data-testid*="send" i]:not([disabled])',
+      'button[aria-label="Send prompt" i]',
+      'button[aria-label*="Send" i]:not([disabled])',
+      'form button[type="submit"]:not([disabled])',
+      'button[type="submit"]:not([disabled])'
+    ];
+    for (const selector of selectors) {
+      const button = document.querySelector(selector);
+      if (button && !button.disabled && button.getAttribute("aria-hidden") !== "true") return button;
+    }
+    return null;
+  }
+
+  function setComposerText(composer, text) {
+    composer.focus();
+    if (composer.tagName === "TEXTAREA") {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype, "value"
+      )?.set;
+      if (!setter) throw new Error("TEXTAREA_VALUE_SETTER_NOT_FOUND");
+      setter.call(composer, text);
+    } else {
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(composer);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      if (!document.execCommand("insertText", false, text)) {
+        composer.textContent = text;
+      }
+    }
+    composer.dispatchEvent(new InputEvent("input", {
+      bubbles: true, inputType: "insertText", data: text
+    }));
+  }
+
+  async function waitForSendControl(timeoutMs = 3000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const button = findSendButton();
+      if (button) return {type: "button", element: button};
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return null;
   }
 
   async function complete(commandId, result) {
@@ -52,26 +95,27 @@
         const composer = findComposer();
         if (!composer) throw new Error("CHAT_COMPOSER_NOT_FOUND");
         const text = command.payload?.text || "";
-        composer.focus();
+        setComposerText(composer, text);
 
-        if (composer.tagName === "TEXTAREA") {
-          const setter = Object.getOwnPropertyDescriptor(
-            HTMLTextAreaElement.prototype, "value"
-          )?.set;
-          if (!setter) throw new Error("TEXTAREA_VALUE_SETTER_NOT_FOUND");
-          setter.call(composer, text);
-          composer.dispatchEvent(new Event("input", {bubbles: true}));
-        } else {
-          composer.textContent = text;
-          composer.dispatchEvent(new InputEvent("input", {
-            bubbles: true, inputType: "insertText", data: text
-          }));
+        const control = await waitForSendControl();
+        if (control?.element) {
+          control.element.click();
+          await complete(command.command_id, {ok: true, sent: true, method: "button"});
+          return;
         }
 
-        const send = findSendButton();
-        if (!send) throw new Error("CHAT_SEND_BUTTON_NOT_FOUND");
-        send.click();
-        await complete(command.command_id, {ok: true, sent: true});
+        // Current ChatGPT builds can submit from the composer without exposing
+        // a stable send-button selector. Enter is the UI-native fallback.
+        composer.focus();
+        composer.dispatchEvent(new KeyboardEvent("keydown", {
+          bubbles: true, cancelable: true, key: "Enter", code: "Enter",
+          keyCode: 13, which: 13
+        }));
+        composer.dispatchEvent(new KeyboardEvent("keyup", {
+          bubbles: true, cancelable: true, key: "Enter", code: "Enter",
+          keyCode: 13, which: 13
+        }));
+        await complete(command.command_id, {ok: true, sent: true, method: "enter-fallback"});
         return;
       }
 
