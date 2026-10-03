@@ -152,6 +152,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, STATE.complete(str(payload.get("command_id", "")), payload.get("result") or {}))
             elif parsed.path == "/read":
                 self._json(202, {"ok": True, "command": STATE.queue(str(payload.get("tab_id", "")), "read", {})})
+            elif parsed.path == "/diagnose":
+                self._json(202, {"ok": True, "command": STATE.queue(str(payload.get("tab_id", "")), "diagnose", {})})
             elif parsed.path == "/reply":
                 self._json(202, {"ok": True, "command": STATE.queue(str(payload.get("tab_id", "")), "reply", {"text": str(payload.get("text", ""))})})
             else:
