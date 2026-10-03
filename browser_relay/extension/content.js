@@ -148,7 +148,7 @@
         const form = composer.closest("form");
         if (form && typeof form.requestSubmit === "function") {
           form.requestSubmit();
-          const verified = await waitForUserMessage(text);
+          const verified = await waitForSubmission(text, composer);
           if (verified) {
             await complete(command.command_id, {ok: true, sent: true, ui_verified: true, method: "form.requestSubmit"});
             return;
