@@ -3,9 +3,31 @@
   "name": "BirdEye Browser Relay",
   "version": "0.1.1",
   "description": "Local browser relay for BirdEye without Chrome remote debugging.",
-  "permissions": ["tabs", "alarms"],
-  "host_permissions": ["http://127.0.0.1:7726/*", "http://localhost:7726/*"],
-  "background": {"service_worker": "service_worker.js"},
-  "content_scripts": [{"matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"], "js": ["content.js"], "run_at": "document_idle"}],
-  "action": {"default_title": "BirdEye Browser Relay"}
+  "permissions": [
+    "tabs",
+    "alarms",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:7726/*",
+    "http://localhost:7726/*"
+  ],
+  "background": {
+    "service_worker": "service_worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "BirdEye Browser Relay"
+  }
 }
