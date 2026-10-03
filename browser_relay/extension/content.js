@@ -22,6 +22,20 @@
     );
   }
 
+  function userMessages() {
+    const nodes = Array.from(document.querySelectorAll('[data-message-author-role="user"]'));
+    return nodes.map(node => (node.innerText || "").trim()).filter(Boolean);
+  }
+
+  async function waitForUserMessage(expected, timeoutMs = 5000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (userMessages().some(text => text === expected || text.includes(expected))) return true;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return false;
+  }
+
   function findSendButton() {
     const selectors = [
       'button[data-testid="send-button"]',
@@ -100,12 +114,25 @@
         const control = await waitForSendControl();
         if (control?.element) {
           control.element.click();
-          await complete(command.command_id, {ok: true, sent: true, method: "button"});
+          const verified = await waitForUserMessage(text);
+          if (!verified) throw new Error("CHAT_SUBMISSION_NOT_VERIFIED");
+          await complete(command.command_id, {ok: true, sent: true, ui_verified: true, method: "button"});
           return;
         }
 
-        // Current ChatGPT builds can submit from the composer without exposing
-        // a stable send-button selector. Enter is the UI-native fallback.
+        // Some ChatGPT builds expose no stable send-button selector. Prefer
+        // the containing form's native submission API; only use Enter as the
+        // last fallback, and never report success until the user turn appears.
+        const form = composer.closest("form");
+        if (form && typeof form.requestSubmit === "function") {
+          form.requestSubmit();
+          const verified = await waitForUserMessage(text);
+          if (verified) {
+            await complete(command.command_id, {ok: true, sent: true, ui_verified: true, method: "form.requestSubmit"});
+            return;
+          }
+        }
+
         composer.focus();
         composer.dispatchEvent(new KeyboardEvent("keydown", {
           bubbles: true, cancelable: true, key: "Enter", code: "Enter",
@@ -115,7 +142,9 @@
           bubbles: true, cancelable: true, key: "Enter", code: "Enter",
           keyCode: 13, which: 13
         }));
-        await complete(command.command_id, {ok: true, sent: true, method: "enter-fallback"});
+        const verified = await waitForUserMessage(text);
+        if (!verified) throw new Error("CHAT_SUBMISSION_NOT_VERIFIED");
+        await complete(command.command_id, {ok: true, sent: true, ui_verified: true, method: "enter-fallback"});
         return;
       }
 
