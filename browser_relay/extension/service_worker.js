@@ -145,7 +145,7 @@ async function poll() {
 }
 
 function ensureAlarm() {
-  chrome.alarms.create(ALARM, {periodInMinutes:0.012});
+  chrome.alarms.create(ALARM, {periodInMinutes:0.5});
 }
 
 chrome.runtime.onInstalled.addListener(() => { ensureAlarm(); poll(); });
