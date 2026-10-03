@@ -95,6 +95,26 @@
 
   async function execute(command) {
     try {
+      if (command.action === "diagnose") {
+        const composer = findComposer();
+        const buttons = Array.from(document.querySelectorAll("button")).slice(-40).map(button => ({
+          text: (button.innerText || "").trim().slice(0,120),
+          aria: button.getAttribute("aria-label"),
+          testid: button.getAttribute("data-testid"),
+          type: button.getAttribute("type"),
+          disabled: !!button.disabled
+        }));
+        await complete(command.command_id, {
+          ok: true,
+          url: location.href,
+          title: document.title,
+          composer: composer ? {tag: composer.tagName, role: composer.getAttribute("role"), aria: composer.getAttribute("aria-label"), placeholder: composer.getAttribute("placeholder"), outer: composer.outerHTML.slice(0,1200)} : null,
+          form: composer?.closest("form") ? composer.closest("form").outerHTML.slice(0,2000) : null,
+          buttons
+        });
+        return;
+      }
+
       if (command.action === "read") {
         const text = latestAssistantText();
         const changed = text !== lastAssistant;
