@@ -245,7 +245,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(202, {"ok": True, "command": STATE.queue(str(payload.get("tab_id", "")), "reply", {"text": str(payload.get("text", ""))})})
             else:
                 self._json(404, {"ok": False, "error": "NOT_FOUND"})
-        except (ValueError, KeyError, json.JSONDecodeError) as exc:
+        except (ValueError, KeyError, RuntimeError, json.JSONDecodeError) as exc:
             self._json(400, {"ok": False, "error": type(exc).__name__, "message": str(exc)})
 
     def log_message(self, format: str, *args: object) -> None:
