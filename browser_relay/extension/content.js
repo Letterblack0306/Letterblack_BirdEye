@@ -154,17 +154,16 @@
         }
 
         composer.focus();
-        composer.dispatchEvent(new KeyboardEvent("keydown", {
-          bubbles: true, cancelable: true, key: "Enter", code: "Enter",
-          keyCode: 13, which: 13
-        }));
-        composer.dispatchEvent(new KeyboardEvent("keyup", {
-          bubbles: true, cancelable: true, key: "Enter", code: "Enter",
-          keyCode: 13, which: 13
-        }));
+        const native = await fetch(RELAY + "/native-submit", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({window_title: document.title})
+        });
+        const nativeResult = await native.json();
+        if (!native.ok || !nativeResult.ok) throw new Error(nativeResult.error || "NATIVE_SUBMIT_FAILED");
         const verified = await waitForUserMessage(text);
         if (!verified) throw new Error("CHAT_SUBMISSION_NOT_VERIFIED");
-        await complete(command.command_id, {ok: true, sent: true, ui_verified: true, method: "enter-fallback"});
+        await complete(command.command_id, {ok: true, sent: true, ui_verified: true, method: "native-os-enter"});
         return;
       }
 
