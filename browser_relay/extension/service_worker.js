@@ -122,6 +122,12 @@ async function executeInTab(tabId, command) {
   return result;
 }
 
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "BIRDEYE_GET_TAB_ID") {
+    sendResponse({tab_id: sender.tab?.id != null ? String(sender.tab.id) : null});
+  }
+});
+
 async function dispatchOne(tab) {
   if (!isChatGPT(tab)) return;
   try {
@@ -140,17 +146,12 @@ async function dispatchOne(tab) {
 }
 
 async function poll() {
-  const tabs = await chrome.tabs.query({});
-  for (const tab of tabs) await dispatchOne(tab);
+  // Command consumption stays in the content script for low-latency DOM/UI execution.
+  // The service worker only supplies tab identity and registration lifecycle.
 }
 
-function ensureAlarm() {
-  chrome.alarms.create(ALARM, {periodInMinutes:0.5});
-}
-
-chrome.runtime.onInstalled.addListener(() => { ensureAlarm(); poll(); });
-chrome.runtime.onStartup.addListener(() => ensureAlarm());
-chrome.alarms.onAlarm.addListener(alarm => { if (alarm.name === ALARM) poll(); });
+chrome.runtime.onInstalled.addListener(() => {});
+chrome.runtime.onStartup.addListener(() => {});
 chrome.tabs.onCreated.addListener(register);
 chrome.tabs.onUpdated.addListener((_tabId, _change, tab) => register(tab));
 chrome.tabs.onRemoved.addListener(tabId => { post("/tabs/unregister", {tab_id:String(tabId)}).catch(() => {}); });
