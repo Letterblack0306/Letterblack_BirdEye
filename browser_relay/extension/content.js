@@ -22,6 +22,16 @@
     );
   }
 
+  async function waitForComposer(timeoutMs = 15000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const composer = findComposer();
+      if (composer) return composer;
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    return null;
+  }
+
   function userMessages() {
     const nodes = Array.from(document.querySelectorAll('[data-message-author-role="user"]'));
     return nodes.map(node => (node.innerText || "").trim()).filter(Boolean);
@@ -128,8 +138,8 @@
       }
 
       if (command.action === "reply") {
-        const composer = findComposer();
-        if (!composer) throw new Error("CHAT_COMPOSER_NOT_FOUND");
+        const composer = await waitForComposer();
+        if (!composer) throw new Error("CHAT_COMPOSER_NOT_FOUND_AFTER_15S");
         const text = command.payload?.text || "";
         setComposerText(composer, text);
 
