@@ -27,10 +27,12 @@
     return nodes.map(node => (node.innerText || "").trim()).filter(Boolean);
   }
 
-  async function waitForUserMessage(expected, timeoutMs = 5000) {
+  async function waitForSubmission(expected, composer, timeoutMs = 5000) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (userMessages().some(text => text === expected || text.includes(expected))) return true;
+      const current = (composer.innerText || composer.textContent || "").trim();
+      if (!current || !current.includes(expected)) return true;
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     return false;
@@ -134,7 +136,7 @@
         const control = await waitForSendControl();
         if (control?.element) {
           control.element.click();
-          const verified = await waitForUserMessage(text);
+          const verified = await waitForSubmission(text, composer);
           if (!verified) throw new Error("CHAT_SUBMISSION_NOT_VERIFIED");
           await complete(command.command_id, {ok: true, sent: true, ui_verified: true, method: "button"});
           return;
