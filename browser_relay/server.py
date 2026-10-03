@@ -16,17 +16,47 @@ DEFAULT_PORT = 7726
 STATE_PATH = Path(__file__).resolve().parent / "state.json"
 
 
-def native_submit_chrome(window_title: str) -> dict[str, Any]:
-    """Send a real OS-level Enter to the Chrome window matching the active tab title.
+def _set_clipboard_text(text: str) -> None:
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    CF_UNICODETEXT = 13
+    GMEM_MOVEABLE = 0x0002
+    data = (text + "\\x00").encode("utf-16-le")
+    hmem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+    if not hmem:
+        raise RuntimeError("CLIPBOARD_ALLOC_FAILED")
+    ptr = kernel32.GlobalLock(hmem)
+    if not ptr:
+        kernel32.GlobalFree(hmem)
+        raise RuntimeError("CLIPBOARD_LOCK_FAILED")
+    try:
+        ctypes.memmove(ptr, data, len(data))
+    finally:
+        kernel32.GlobalUnlock(hmem)
+    if not user32.OpenClipboard(None):
+        kernel32.GlobalFree(hmem)
+        raise RuntimeError("CLIPBOARD_OPEN_FAILED")
+    try:
+        user32.EmptyClipboard()
+        if not user32.SetClipboardData(CF_UNICODETEXT, hmem):
+            kernel32.GlobalFree(hmem)
+            raise RuntimeError("CLIPBOARD_SET_FAILED")
+        hmem = None
+    finally:
+        user32.CloseClipboard()
 
-    This is intentionally separate from CDP: the relay uses the user's visible
-    Chrome window and the browser's normal keyboard event path.
+
+def native_submit_chrome(window_title: str) -> dict[str, Any]:
+    """Submit through the visible Chrome UI without CDP.
+
+    The relay activates Chrome, uses Chrome's tab-search UI to select the
+    requested tab, then emits a real OS-level Enter key to the focused composer.
     """
     if not window_title:
         raise ValueError("window_title is required")
     user32 = ctypes.windll.user32
-    target = ctypes.c_void_p()
     enum_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    target = ctypes.c_void_p()
 
     def callback(hwnd, _lparam):
         if not user32.IsWindowVisible(hwnd):
@@ -36,8 +66,7 @@ def native_submit_chrome(window_title: str) -> dict[str, Any]:
             return True
         buf = ctypes.create_unicode_buffer(length + 1)
         user32.GetWindowTextW(hwnd, buf, length + 1)
-        title = buf.value
-        if window_title in title and "Chrome" in title:
+        if "Chrome" in buf.value:
             target.value = hwnd
             return False
         return True
@@ -47,12 +76,27 @@ def native_submit_chrome(window_title: str) -> dict[str, Any]:
         raise RuntimeError("CHROME_WINDOW_NOT_FOUND")
     if not user32.SetForegroundWindow(target):
         raise RuntimeError("CHROME_FOREGROUND_FAILED")
-    time.sleep(0.15)
+    _set_clipboard_text(window_title)
+    time.sleep(0.2)
     KEYUP = 0x0002
-    VK_RETURN = 0x0D
+    VK_CONTROL, VK_SHIFT, VK_A, VK_V, VK_RETURN = 0x11, 0x10, 0x41, 0x56, 0x0D
+    for vk in (VK_CONTROL, VK_SHIFT, VK_A):
+        user32.keybd_event(vk, 0, 0, 0)
+    for vk in (VK_A, VK_SHIFT, VK_CONTROL):
+        user32.keybd_event(vk, 0, KEYUP, 0)
+    time.sleep(0.3)
+    for vk in (VK_CONTROL, VK_V):
+        user32.keybd_event(vk, 0, 0, 0)
+    for vk in (VK_V, VK_CONTROL):
+        user32.keybd_event(vk, 0, KEYUP, 0)
+    time.sleep(0.4)
+    user32.keybd_event(VK_RETURN, 0, 0, 0)
+    user32.keybd_event(VK_RETURN, 0, KEYUP, 0)
+    time.sleep(0.5)
     user32.keybd_event(VK_RETURN, 0, 0, 0)
     user32.keybd_event(VK_RETURN, 0, KEYUP, 0)
     return {"ok": True, "native": True, "key": "Enter", "window_title": window_title}
+
 
 
 class RelayState:
