@@ -163,7 +163,7 @@
         });
         const nativeResult = await native.json();
         if (!native.ok || !nativeResult.ok) throw new Error(nativeResult.error || "NATIVE_SUBMIT_FAILED");
-        const verified = await waitForUserMessage(text);
+        const verified = await waitForSubmission(text, composer);
         if (!verified) throw new Error("CHAT_SUBMISSION_NOT_VERIFIED");
         await complete(command.command_id, {ok: true, sent: true, ui_verified: true, method: "native-os-enter"});
         return;
