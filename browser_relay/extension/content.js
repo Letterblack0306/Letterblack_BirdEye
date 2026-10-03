@@ -195,9 +195,11 @@
     }
   }
 
-  // Command consumption is owned by the MV3 service worker. The content
-  // script remains a DOM execution fallback but does not compete for claims.
-  function startPolling() {}
+  function startPolling() {
+    if (polling) return;
+    setInterval(pollCommands, 500);
+    pollCommands();
+  }
 
   chrome.runtime.sendMessage({type: "BIRDEYE_GET_TAB_ID"}, response => {
     if (!chrome.runtime.lastError && response?.tab_id) {
