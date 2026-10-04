@@ -14,6 +14,10 @@ from typing import Any
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_CONFIG = HERE / "bridge_config.json"
+PRMD_PATHS = (
+    "/.well-known/oauth-protected-resource",
+    "/.well-known/oauth-protected-resource/mcp",
+)
 
 WRITE_TOOLS = {"write_text", "patch_text"}
 EXEC_TOOLS = {"run_process", "process_start", "process_stop"}
@@ -49,7 +53,9 @@ def _audit(log_dir: Path, event: dict[str, Any]) -> None:
     record = {"ts": datetime.now(timezone.utc).isoformat(), **event}
     with (log_dir / "bridge_audit.jsonl").open("a", encoding="utf-8") as fh:
         fh.write(
-            json.dumps(record, sort_keys=True, separators=(",", ":"), default=str)
+            json.dumps(
+                record, sort_keys=True, separators=(",", ":"), default=str
+            )
             + "\n"
         )
 
@@ -88,9 +94,15 @@ async def run() -> None:
     log_dir = cfg_path.parent / "logs"
 
     child_env = dict(os.environ)
-    child_env["MINI_MCP_READ_ROOTS"] = ";".join(cfg.get("read_roots", ["*"]))
-    child_env["MINI_MCP_WRITE_ROOTS"] = ";".join(cfg.get("write_roots", []))
-    child_env["MINI_MCP_EXEC_ALLOW"] = ";".join(cfg.get("exec_allow", []))
+    child_env["MINI_MCP_READ_ROOTS"] = ";".join(
+        cfg.get("read_roots", ["*"])
+    )
+    child_env["MINI_MCP_WRITE_ROOTS"] = ";".join(
+        cfg.get("write_roots", [])
+    )
+    child_env["MINI_MCP_EXEC_ALLOW"] = ";".join(
+        cfg.get("exec_allow", [])
+    )
 
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
@@ -112,7 +124,11 @@ async def run() -> None:
             async def on_list_tools(ctx, params):
                 result = await upstream.list_tools()
                 return types.ListToolsResult(
-                    tools=[t for t in result.tools if _gate(cfg, t.name) is None]
+                    tools=[
+                        t
+                        for t in result.tools
+                        if _gate(cfg, t.name) is None
+                    ]
                 )
 
             async def on_call_tool(ctx, params):
@@ -170,14 +186,31 @@ async def run() -> None:
                 streamable_http_path="/mcp"
             )
 
+            async def prmd(request):
+                base = str(request.base_url).rstrip("/")
+                return JSONResponse(
+                    {
+                        "resource": f"{base}/mcp",
+                        "resource_name": "local-mini-remote-bridge-v2",
+                        "bearer_methods_supported": ["header"],
+                    }
+                )
+
+            for path in PRMD_PATHS:
+                app.router.add_route(path, prmd, methods=["GET"])
+
             async def health(request):
                 return JSONResponse(
                     {
                         "ok": True,
                         "bridge": "local-mini-remote-bridge-v2",
                         "server_sha256": actual,
-                        "write_enabled": bool(cfg.get("write_enabled", False)),
-                        "exec_enabled": bool(cfg.get("exec_enabled", False)),
+                        "write_enabled": bool(
+                            cfg.get("write_enabled", False)
+                        ),
+                        "exec_enabled": bool(
+                            cfg.get("exec_enabled", False)
+                        ),
                     }
                 )
 
@@ -189,6 +222,11 @@ async def run() -> None:
                     self.expected_token = expected_token
 
                 async def __call__(self, scope, receive, send):
+                    if (
+                        scope["type"] == "http"
+                        and scope.get("path", "") in PRMD_PATHS
+                    ):
+                        return await self.inner(scope, receive, send)
                     if scope["type"] != "http":
                         return await self.inner(scope, receive, send)
                     headers = dict(scope.get("headers") or [])
@@ -205,8 +243,17 @@ async def run() -> None:
                                 "path": scope.get("path", ""),
                             },
                         )
+                        meta = (
+                            f"http://{host}:{port}"
+                            "/.well-known/oauth-protected-resource/mcp"
+                        )
                         return await JSONResponse(
-                            {"error": "unauthorized"}, status_code=401
+                            {"error": "unauthorized"},
+                            status_code=401,
+                            headers={
+                                "WWW-Authenticate":
+                                    f'Bearer resource_metadata="{meta}"'
+                            },
                         )(scope, receive, send)
                     return await self.inner(scope, receive, send)
 
