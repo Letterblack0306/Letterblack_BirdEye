@@ -24,7 +24,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +86,17 @@ PLAN_STATES = frozenset(
 
 MAX_REQUEST_AGE_SECONDS = 20 * 60
 
+# Operations this read-only projection genuinely performs. The remaining entries
+# in OPERATIONS are declared by the request contract but have no implementation
+# here; they are rejected rather than issued a false completion receipt.
+READ_ONLY_OPERATIONS = frozenset(
+    {
+        "workspace_status",
+        "workspace_diagnosis",
+        "git_compare",
+    }
+)
+
 
 class ProjectionError(RuntimeError):
     pass
@@ -101,12 +112,21 @@ def utc_now() -> str:
 
 
 def parse_timestamp(value: str | None) -> datetime | None:
+    """Parse an ISO-8601 timestamp into a timezone-aware UTC datetime.
+
+    Naive timestamps are interpreted as UTC. Without this normalization a naive
+    ``expiresAt`` would raise TypeError when compared against an aware value,
+    escaping as an unhandled error instead of a ProjectionError.
+    """
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _path_text(value: Any, label: str) -> str | None:
@@ -268,12 +288,14 @@ class Registry:
             projects.append(_parse_project(entry))
         self._projects = projects
         dedupe: dict[str, Project] = {}
+        seen_workspaces: set[str] = set()
         for project in projects:
             if project.project_id in dedupe:
                 raise ProjectionError(f"duplicate projectId: {project.project_id}")
-            if project.workspace_id in dedupe:
+            if project.workspace_id in seen_workspaces:
                 raise ProjectionError(f"duplicate workspaceId: {project.workspace_id}")
             dedupe[project.project_id] = project
+            seen_workspaces.add(project.workspace_id)
         self._by_id = dict(dedupe)
 
     @property
@@ -306,11 +328,13 @@ def _is_git_repository(root: Path) -> bool:
 
 def _branch_and_head(root: Path) -> tuple[str | None, str | None, bool]:
     head = _git_value(root, "rev-parse", "HEAD") or None
-    detached = head is None
     branch: str | None = None
     if head is not None:
         symbolic = _git_value(root, "symbolic-ref", "--quiet", "--short", "HEAD")
         branch = symbolic or None
+    # Detached HEAD is the absence of a symbolic branch, not the absence of a
+    # commit: a detached HEAD still resolves to a valid SHA.
+    detached = head is not None and branch is None
     return branch, head, detached
 
 
@@ -335,26 +359,56 @@ def _porcelain_lines(root: Path) -> list[str]:
     return [line for line in result.stdout.splitlines() if line.strip()]
 
 
+# Porcelain v1 XY codes. A path with any non-space X is staged in some way,
+# including deletions (D) and type changes (T). Any non-space Y means a
+# worktree change. Two-letter codes mark unresolved conflicts.
+_STAGED_CODES = set("MADRCUT")
+_WORKTREE_CODES = set("MADRCUT")
+_CONFLICT_CODES = {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
+
+
 def _classify_porcelain(lines: list[str]) -> dict[str, Any]:
     staged: list[str] = []
     modified: list[str] = []
     untracked: list[str] = []
+    deleted: list[str] = []
+    conflicted: list[str] = []
     for line in lines:
         if len(line) < 3:
             continue
         code = line[:2]
-        path = line[3:].strip() or line[2:].strip()
-        if code[0] in "MARC":
-            staged.append(path)
-        if code[1] == "M":
-            modified.append(path)
-        if code[0] == "?":
+        # "R old -> new" for renames/copies: record the destination path.
+        path = line[3:].strip()
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1].strip()
+        if not path:
+            path = line[2:].strip()
+        if not path:
+            continue
+        if code == "??":
             untracked.append(path)
-    changed = sorted(set(staged) | set(modified) | set(untracked))
+            continue
+        if code in _CONFLICT_CODES:
+            conflicted.append(path)
+            continue
+        x, y = code[0], code[1]
+        if x in _STAGED_CODES:
+            staged.append(path)
+            if x == "D":
+                deleted.append(path)
+        if y in _WORKTREE_CODES:
+            modified.append(path)
+            if y == "D":
+                deleted.append(path)
+    changed = sorted(
+        set(staged) | set(modified) | set(untracked) | set(deleted) | set(conflicted)
+    )
     return {
-        "staged_paths": staged,
-        "modified_paths": modified,
-        "untracked_paths": untracked,
+        "staged_paths": sorted(set(staged)),
+        "modified_paths": sorted(set(modified)),
+        "untracked_paths": sorted(set(untracked)),
+        "deleted_paths": sorted(set(deleted)),
+        "conflicted_paths": sorted(set(conflicted)),
         "changed_paths": changed,
         "changed_path_count": len(changed),
         "dirty": bool(changed),
@@ -435,6 +489,15 @@ def git_audit(project: Project, observed_at: str | None = None) -> dict[str, Any
     }
 
 
+def _parse_count(text: str) -> int | None:
+    """Parse a git count field, returning None when it did not resolve.
+
+    ``_git_value`` collapses every git failure to an empty string, so an empty
+    or non-numeric result means "unknown", not zero.
+    """
+    return int(text) if text.isdigit() else None
+
+
 def git_compare(project: Project, target: str, observed_at: str | None = None) -> dict[str, Any]:
     """Report the divergence of resolved HEAD against an explicit target."""
     observed_at = observed_at or utc_now()
@@ -448,12 +511,19 @@ def git_compare(project: Project, target: str, observed_at: str | None = None) -
     ahead_text = _git_value(root, "rev-list", "--count", f"{target}..HEAD")
     behind_text = _git_value(root, "rev-list", "--count", f"HEAD..{target}")
     diff_text = _git_value(root, "diff", "--stat", f"{target}...HEAD")
+    parsed_ahead = _parse_count(ahead_text)
+    parsed_behind = _parse_count(behind_text)
+    resolved = parsed_ahead is not None and parsed_behind is not None
+    # Never claim PROVEN for a comparison whose target never resolved: a bad or
+    # nonexistent ref fails silently inside _git_value, which would otherwise let
+    # an unresolvable target masquerade as proven evidence.
     return {
         "target": target,
-        "ahead": int(ahead_text) if ahead_text.isdigit() else None,
-        "behind": int(behind_text) if behind_text.isdigit() else None,
+        "resolved": resolved,
+        "ahead": parsed_ahead,
+        "behind": parsed_behind,
         "diffStat": diff_text or None,
-        "evidenceLevel": EVIDENCE_PROVEN,
+        "evidenceLevel": EVIDENCE_PROVEN if resolved else EVIDENCE_UNKNOWN,
         "observedAt": observed_at,
     }
 
@@ -485,6 +555,29 @@ def _git_dir_revision(path: str | None, observed_at: str) -> str | None:
     return _git_value(candidate.parent, "rev-parse", "--short", "HEAD") or None
 
 
+def _plan_currentness(plan: dict[str, Any], project: Project, observed_at: str) -> str:
+    """Classify whether a parseable plan document is actually current.
+
+    Readability proves only that the document exists. A document that declares a
+    non-current status, or whose recorded revision does not match the repository
+    it claims to describe, is reported as stale rather than current.
+    """
+    declared = plan.get("status")
+    if isinstance(declared, str) and declared.strip():
+        normalized = declared.strip().lower()
+        if normalized in {"superseded", "stale", "archived", "closed", "obsolete"}:
+            return "DOCUMENTED_STALE"
+
+    declared_head = plan.get("source_head")
+    root = project.root_path
+    if declared_head and root and root.is_dir() and _is_git_repository(root):
+        observed_head = _git_value(root, "rev-parse", "HEAD")
+        if observed_head and str(declared_head) != observed_head:
+            return "DOCUMENTED_STALE"
+
+    return "DOCUMENTED_CURRENT"
+
+
 def plan_status_projection(project: Project, observed_at: str | None = None) -> dict[str, Any]:
     """Project the canonical plan/status documents. Read-only; never rewrites.
 
@@ -496,12 +589,12 @@ def plan_status_projection(project: Project, observed_at: str | None = None) -> 
     status = _read_json_document(project.status_document)
 
     plan_doc = project.plan_document
-    if plan is None and plan_doc:
-        state = "PLAN_OWNER_MISSING"
-    elif plan is None:
+    if plan is None:
         state = "PLAN_OWNER_MISSING"
     else:
-        state = "DOCUMENTED_CURRENT"
+        # Parseable is not the same as current. Assigning DOCUMENTED_CURRENT on
+        # readability alone would treat existence as freshness.
+        state = _plan_currentness(plan, project, observed_at)
 
     plan_truth = plan.get("plan_truth") if isinstance(plan, dict) else None
     active_gate = None
@@ -565,7 +658,11 @@ def runtime_status_projection(project: Project, observed_at: str | None = None) 
         }
     return {
         "source": str(path),
-        "evidenceLevel": EVIDENCE_PROVEN,
+        # Reading a JSON file proves only that the file was readable. It is not
+        # proof that providers, tools, transport, memory or agent execution are
+        # healthy, so the claim is scoped to readability and labelled as such.
+        "evidenceLevel": EVIDENCE_SUPPORTED,
+        "evidenceScope": "runtime_status_file_readable",
         "value": raw if isinstance(raw, dict) else None,
         "observedAt": observed_at,
     }
@@ -636,8 +733,14 @@ def parse_bounded_request(value: Any) -> BoundedRequest:
     expires = parse_timestamp(request.expires_at)
     if created is None:
         raise ProjectionError("createdAt must be an ISO-8601 timestamp")
-    if expires is not None and expires < datetime.now(timezone.utc):
+    now = datetime.now(timezone.utc)
+    if expires is not None and expires < now:
         raise ProjectionError("expired request")
+    # A request with no expiresAt is still bounded by maximum age.
+    if now - created > timedelta(seconds=MAX_REQUEST_AGE_SECONDS):
+        raise ProjectionError(
+            f"stale request: createdAt exceeds the {MAX_REQUEST_AGE_SECONDS}s maximum age"
+        )
 
     profile = scope.get("validationProfile")
     if profile is not None and (not isinstance(profile, str) or not profile.strip()):
@@ -698,11 +801,33 @@ def projection_alignment(
     }
 
 
+def _assert_operation_performed(operation: str) -> None:
+    """Refuse to journal ``completed`` for an operation this module never runs.
+
+    This projection is a read-only evidence collector. It can honestly satisfy
+    the inspection operations, but it cannot refresh an index or execute a
+    validation profile. Those must fail loudly rather than receive a completion
+    receipt for work that was never performed.
+    """
+    if operation in READ_ONLY_OPERATIONS:
+        return
+    raise ProjectionError(
+        f"operation is declared but not performed by this read-only projection: {operation}"
+    )
+
+
 def produce_projection(
     project: Project, request: BoundedRequest | None = None, observed_at: str | None = None
 ) -> dict[str, Any]:
-    """Assemble a single attributable evidence record for a project."""
+    """Assemble a single attributable evidence record for a project.
+
+    The requested operation is dispatched explicitly so that a receipt can
+    never be issued for work this module does not actually perform.
+    """
     observed_at = observed_at or utc_now()
+    if request is not None:
+        _assert_operation_performed(request.operation)
+
     audit = git_audit(project, observed_at=observed_at)
     plan_truth = plan_status_projection(project, observed_at=observed_at)
     runtime = runtime_status_projection(project, observed_at=observed_at)
@@ -719,7 +844,10 @@ def produce_projection(
         verdict = "REVIEW"
     elif audit.get("dirty"):
         verdict = "REVIEW"
-    elif plan_truth.get("authoritative") is not True and plan_truth.get("planState") not in ("PLAN_OWNER_MISSING",):
+    elif plan_truth.get("authoritative") is not True:
+        # A missing canonical plan is a REVIEW condition. Reporting PASS with no
+        # authoritative plan owner would contradict the projection's own
+        # authority model.
         verdict = "REVIEW"
     elif runtime.get("evidenceLevel") == EVIDENCE_BLOCKED:
         verdict = "REVIEW"
