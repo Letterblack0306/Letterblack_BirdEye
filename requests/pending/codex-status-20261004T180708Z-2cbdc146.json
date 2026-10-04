@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "requestId": "codex-status-20261004T180708Z-2cbdc146",
+  "createdAt": "2026-10-04T18:11:49.659562+00:00",
+  "expiresAt": "2026-10-04T18:26:49.659562+00:00",
+  "workspaceId": "access-browser-agent",
+  "operation": "workspace_status",
+  "scope": {},
+  "mutationAllowed": false
+}
