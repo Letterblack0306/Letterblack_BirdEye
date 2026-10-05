@@ -37,7 +37,17 @@ $template.server = (Join-Path $TargetRoot 'mini_local_mcp.py')
 $template | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $configPath -Encoding UTF8
 
 if (-not $NoRestart) {
-  $bridgePath = (Join-Path $RemoteBridge 'local_bridge.py')
+  $bridgePath = Join-Path $RemoteBridge 'local_bridge.py'
+
+  $bridgeToken = $env:LOCAL_MINI_BRIDGE_TOKEN
+  if ([string]::IsNullOrWhiteSpace($bridgeToken)) {
+    $bridgeToken = [Environment]::GetEnvironmentVariable('LOCAL_MINI_BRIDGE_TOKEN', 'User')
+  }
+  if ([string]::IsNullOrWhiteSpace($bridgeToken)) {
+    throw 'LOCAL_MINI_BRIDGE_TOKEN is not set in the current process or User environment.'
+  }
+  $env:LOCAL_MINI_BRIDGE_TOKEN = $bridgeToken
+
   Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -and $_.CommandLine.Contains($bridgePath) } |
     ForEach-Object {
@@ -45,12 +55,43 @@ if (-not $NoRestart) {
     }
 
   Start-Sleep -Milliseconds 500
-  $python = $template.python
+  $python = [string]$template.python
   $out = Join-Path $RemoteBridge 'logs\birdeye.out.log'
   $err = Join-Path $RemoteBridge 'logs\birdeye.err.log'
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $out) | Out-Null
-  Start-Process -FilePath $python -ArgumentList @($bridgePath) -WorkingDirectory $RemoteBridge -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err
-  Start-Sleep -Seconds 2
+
+  # Quote the script path explicitly because TargetRoot contains spaces.
+  $quotedBridgePath = '"{0}"' -f $bridgePath
+  Start-Process -FilePath $python -ArgumentList @($quotedBridgePath) -WorkingDirectory $RemoteBridge -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err
+
+  $healthUrl = 'http://127.0.0.1:8765/health'
+  $headers = @{ Authorization = "Bearer $bridgeToken" }
+  $health = $null
+  $lastError = $null
+  for ($attempt = 1; $attempt -le 20; $attempt++) {
+    Start-Sleep -Milliseconds 500
+    try {
+      $health = Invoke-RestMethod -Uri $healthUrl -Headers $headers -Method Get -TimeoutSec 3
+      if ($health.ok -eq $true) { break }
+    }
+    catch {
+      $lastError = $_
+    }
+  }
+
+  if ($null -eq $health -or $health.ok -ne $true) {
+    throw "Authenticated bridge health check failed after restart. Last error: $lastError"
+  }
+  if ($health.write_enabled -ne $true) {
+    throw 'Authenticated bridge health check reports write_enabled=false.'
+  }
+  if ($health.exec_enabled -ne $true) {
+    throw 'Authenticated bridge health check reports exec_enabled=false.'
+  }
+
+  Write-Host 'BRIDGE_HEALTH=PASS'
+  Write-Host "BRIDGE_WRITE_ENABLED=$($health.write_enabled)"
+  Write-Host "BRIDGE_EXEC_ENABLED=$($health.exec_enabled)"
 }
 
 Write-Host "BACKUP_DIR=$BackupRoot"
