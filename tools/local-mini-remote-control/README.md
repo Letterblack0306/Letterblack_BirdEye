@@ -1,84 +1,89 @@
 # Local Mini Remote Control Package
 
-Purpose: expose governed local filesystem write/copy/hash and process execution to the existing ChatGPT remote MCP bridge without relying on a local agent to invent implementation details.
+This package deploys and verifies the Local Mini MCP bridge without modifying the active BirdEye checkout.
 
-## Target runtime
+## Security boundary
 
-Default deployment target:
+The default filesystem scope is only the deployment target:
 
-`C:\MCP Local\Local_Mini_MCP`
+    C:\MCP Local\Local_Mini_MCP
 
-Existing tunnel credentials are preserved. The installer backs up the files it replaces before changing anything.
+To authorize additional roots:
+
+    powershell -ExecutionPolicy Bypass -File .\tools\local-mini-remote-control\install.ps1 -Roots 'C:\MCP Local\Local_Mini_MCP;D:\2026\SAM_GINIE'
+
+All mounted drives require an explicit opt-in:
+
+    powershell -ExecutionPolicy Bypass -File .\tools\local-mini-remote-control\install.ps1 -Roots '*' -AllowAllRoots
+
+Windows ACL/UAC still applies. The HTTP bridge binds only to loopback and requires LOCAL_MINI_BRIDGE_TOKEN.
+
+## What is deployed
+
+Only these runtime owners are replaced:
+
+- mini_local_mcp.py
+- remote_bridge/local_bridge.py
+- remote_bridge/bridge_config.json
+
+Existing tunnel scripts and credentials are preserved:
+
+- remote_bridge/connect_tunnel.ps1
+- remote_bridge/tunnel_switch.ps1
+- remote_bridge/start_bridge.ps1
+- remote_bridge/tunnel_credentials.env
+
+Connector rediscovery is handled by the package helper refresh_connector.ps1. It restarts the existing tunnel profile without rewriting those files.
 
 ## Capabilities
 
-Read-only:
-- health
-- system_info
-- list_drives
-- list_dir
-- read_text
-- stat_path
-- file_hash
+Read: health, system_info, list_drives, list_dir, read_text, stat_path, file_hash.
 
-Write:
-- write_text
-- copy_file
-- move_file
-- delete_file
-- mkdir
+Write: write_text, mkdir, copy_file, move_file, delete_file.
 
-Execution:
-- run_process (shell=false)
+Execution: run_process with shell=False.
 
-All filesystem paths are constrained by MINI_MCP_ROOTS and Windows ACL/UAC still applies.
+bridge_config.json is the sole authority for write/exec enablement. Stale LOCAL_MINI_REMOTE_WRITE and LOCAL_MINI_REMOTE_EXEC environment values are ignored by the bridge.
 
 ## Install
 
-From a clone/pull of this repository:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\local-mini-remote-control\install.ps1
-```
-
-Defaults:
-- target: C:\MCP Local\Local_Mini_MCP
-- write enabled: true
-- exec enabled: true
-- bridge restart: true
+    powershell -ExecutionPolicy Bypass -File .\tools\local-mini-remote-control\install.ps1
 
 The installer:
-1. creates a timestamped backup,
-2. deploys the authoritative server + bridge,
-3. calculates the deployed server SHA-256,
-4. writes bridge_config.json with that hash,
-5. restarts only the local bridge,
-6. runs verification.
 
-## Verify
+1. discovers a Python interpreter that can import mcp, uvicorn, and starlette;
+2. creates a timestamped backup manifest;
+3. deploys only the three runtime-owner files;
+4. computes and records the server SHA-256;
+5. starts the bridge;
+6. performs authenticated health validation;
+7. runs a real MCP behavior smoke test through the HTTP bridge;
+8. restarts the existing tunnel profile to force tool rediscovery.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\local-mini-remote-control\verify.ps1
-```
+Use -PythonExe <path> only when automatic discovery is not appropriate.
 
-Required PASS conditions:
-- mini_local_mcp.py compiles,
-- local_bridge.py compiles,
-- configured server hash equals deployed file hash,
-- write_enabled=true,
-- exec_enabled=true,
-- expected tools are declared.
+## Verification
 
-After the remote connector refreshes, tools/list should expose write_text, copy_file, file_hash and run_process.
+    powershell -ExecutionPolicy Bypass -File .\tools\local-mini-remote-control\verify.ps1
+
+A full PASS requires:
+
+- both Python files compile;
+- deployed SHA-256 matches config;
+- authenticated /health succeeds;
+- write and exec are enabled;
+- HTTP MCP tools/list contains all 13 expected tools;
+- write_text works;
+- file_hash returns the expected SHA-256;
+- run_process actually executes a Python process;
+- the smoke artifact is deleted.
 
 ## Rollback
 
-The install command prints the backup directory. Restore with:
+    powershell -ExecutionPolicy Bypass -File .\tools\local-mini-remote-control\rollback.ps1 -BackupDir '<BACKUP_DIR printed by install>'
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\local-mini-remote-control\rollback.ps1 -BackupDir "<printed backup path>"
-```
+Rollback uses the recorded backup manifest, restores or removes every file the installer changed, restarts the restored bridge, and refreshes the existing tunnel profile.
 
-## Safety boundary
+## Evidence boundary
 
-The HTTP bridge binds only to loopback and requires LOCAL_MINI_BRIDGE_TOKEN. Do not bind it directly to a non-loopback interface. Use the existing authenticated tunnel.
+A package commit is not runtime proof. Runtime acceptance requires installer/verify output plus the refreshed ChatGPT connector exposing the expanded tool list.
