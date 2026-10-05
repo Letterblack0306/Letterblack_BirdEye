@@ -1,6 +1,7 @@
 param(
   [string]$TargetRoot = 'C:\MCP Local\Local_Mini_MCP',
-  [string]$Profile = 'local-mini'
+  [string]$Profile = 'local-mini',
+  [string]$HealthListenAddr = '127.0.0.1:8767'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -67,7 +68,7 @@ if ($health.ok -ne $true) {
   throw 'Bridge health failed before connector refresh.'
 }
 
-& $TunnelExe doctor --profile $Profile --explain
+& $TunnelExe doctor --profile $Profile --health.listen-addr $HealthListenAddr --explain
 if ($LASTEXITCODE -ne 0) {
   throw "tunnel-client doctor failed for profile $Profile"
 }
@@ -77,13 +78,14 @@ Get-CimInstance Win32_Process -Filter "Name='tunnel-client.exe'" -ErrorAction Si
   ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-Start-Process -FilePath $TunnelExe -ArgumentList @('run','--profile',$Profile) -RedirectStandardOutput (Join-Path $LogDir 'tunnel.out.log') -RedirectStandardError (Join-Path $LogDir 'tunnel.err.log') -WindowStyle Hidden
+Start-Process -FilePath $TunnelExe -ArgumentList @('run','--profile',$Profile,'--health.listen-addr',$HealthListenAddr) -RedirectStandardOutput (Join-Path $LogDir 'tunnel.out.log') -RedirectStandardError (Join-Path $LogDir 'tunnel.err.log') -WindowStyle Hidden
 
 $ready = $null
 for ($attempt = 1; $attempt -le 20; $attempt++) {
   Start-Sleep -Milliseconds 500
+  $baseUrl = 'http://' + $HealthListenAddr
   try {
-    $ready = Invoke-WebRequest 'http://127.0.0.1:8080/readyz' -UseBasicParsing -TimeoutSec 3
+    $ready = Invoke-WebRequest ($baseUrl + '/readyz') -UseBasicParsing -TimeoutSec 3
     if ($ready.StatusCode -eq 200) { break }
   } catch {}
 }
