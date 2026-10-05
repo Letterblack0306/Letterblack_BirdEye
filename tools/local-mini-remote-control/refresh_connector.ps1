@@ -9,6 +9,26 @@ $RemoteBridge = Join-Path $TargetRoot 'remote_bridge'
 $ConfigPath = Join-Path $RemoteBridge 'bridge_config.json'
 $TunnelExe = Join-Path $env:LOCALAPPDATA 'tunnel-client\bin\tunnel-client.exe'
 $LogDir = Join-Path $RemoteBridge 'logs'
+$CredFile = Join-Path $RemoteBridge 'tunnel_credentials.env'
+
+function Read-CredentialFallback([string]$Name) {
+  if (-not (Test-Path -LiteralPath $CredFile -PathType Leaf)) {
+    return $null
+  }
+
+  foreach ($line in Get-Content -LiteralPath $CredFile) {
+    if ($line -match '^\s*([A-Z_]+)\s*=\s*(.+?)\s*$') {
+      if ($Matches[1] -eq $Name) {
+        $value = $Matches[2].Trim('"', "'")
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+          return $value
+        }
+      }
+    }
+  }
+
+  return $null
+}
 
 if (-not (Test-Path -LiteralPath $TunnelExe)) {
   throw "tunnel-client not found: $TunnelExe"
@@ -25,11 +45,19 @@ if ([string]::IsNullOrWhiteSpace($token)) {
   throw 'LOCAL_MINI_BRIDGE_TOKEN is not available.'
 }
 
-$env:LOCAL_MINI_BRIDGE_TOKEN = $token
-$env:CONTROL_PLANE_API_KEY = [Environment]::GetEnvironmentVariable('CONTROL_PLANE_API_KEY', 'User')
-if ([string]::IsNullOrWhiteSpace($env:CONTROL_PLANE_API_KEY)) {
-  throw 'CONTROL_PLANE_API_KEY is not available in the User environment.'
+$runtimeKey = [Environment]::GetEnvironmentVariable('CONTROL_PLANE_API_KEY', 'User')
+if ([string]::IsNullOrWhiteSpace($runtimeKey)) {
+  $runtimeKey = $env:CONTROL_PLANE_API_KEY
 }
+if ([string]::IsNullOrWhiteSpace($runtimeKey)) {
+  $runtimeKey = Read-CredentialFallback 'CONTROL_PLANE_API_KEY'
+}
+if ([string]::IsNullOrWhiteSpace($runtimeKey)) {
+  throw 'CONTROL_PLANE_API_KEY is unavailable in User/process environment and tunnel_credentials.env.'
+}
+
+$env:LOCAL_MINI_BRIDGE_TOKEN = $token
+$env:CONTROL_PLANE_API_KEY = $runtimeKey
 $env:MCP_EXTRA_HEADERS = "Authorization: Bearer $token"
 $env:MCP_DISCOVERY_EXTRA_HEADERS = $env:MCP_EXTRA_HEADERS
 
