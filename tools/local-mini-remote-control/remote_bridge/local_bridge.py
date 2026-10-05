@@ -17,13 +17,7 @@ CONFIG_PATH = HERE / "bridge_config.json"
 LOG_DIR = HERE / "logs"
 BRIDGE_NAME = "local-mini-remote-bridge"
 
-WRITE_TOOLS = {
-    "write_text",
-    "mkdir",
-    "copy_file",
-    "move_file",
-    "delete_file",
-}
+WRITE_TOOLS = {"write_text", "mkdir", "copy_file", "move_file", "delete_file"}
 EXEC_TOOLS = {"run_process"}
 
 REMOTE_WRITE_DISABLED = "REMOTE_WRITE_DISABLED"
@@ -48,7 +42,7 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest().lower()
 
 
-def verify_server(cfg: dict[str, Any]) -> None:
+def verify_server(cfg: dict[str, Any]) -> Path:
     server = Path(cfg["server"]).resolve()
     if not server.is_file():
         raise SystemExit(f"missing MCP server: {server}")
@@ -64,17 +58,14 @@ def verify_server(cfg: dict[str, Any]) -> None:
             f"  path     {server}"
         )
     log(f"server hash ok: {actual[:16]}...")
+    return server
 
 
 def write_enabled(cfg: dict[str, Any]) -> bool:
-    if os.environ.get("LOCAL_MINI_REMOTE_WRITE") is not None:
-        return os.environ["LOCAL_MINI_REMOTE_WRITE"] == "1"
     return bool(cfg.get("write_enabled", False))
 
 
 def exec_enabled(cfg: dict[str, Any]) -> bool:
-    if os.environ.get("LOCAL_MINI_REMOTE_EXEC") is not None:
-        return os.environ["LOCAL_MINI_REMOTE_EXEC"] == "1"
     return bool(cfg.get("exec_enabled", False))
 
 
@@ -104,7 +95,7 @@ def policy_check(cfg: dict[str, Any], name: str) -> str | None:
 
 
 async def run(cfg: dict[str, Any]) -> None:
-    verify_server(cfg)
+    server_path = verify_server(cfg)
 
     token = os.environ.get("LOCAL_MINI_BRIDGE_TOKEN", "")
     if not token:
@@ -115,10 +106,13 @@ async def run(cfg: dict[str, Any]) -> None:
         raise SystemExit(f"refusing non-loopback bind: {host!r}")
 
     port = int(cfg.get("listen_port", 8765))
-    max_exec = int(cfg.get("max_exec_timeout_seconds", 300))
+    max_exec = max(1, min(int(cfg.get("max_exec_timeout_seconds", 300)), 600))
+    roots = str(cfg.get("roots") or server_path.parent)
 
     child_env = dict(os.environ)
-    child_env["MINI_MCP_ROOTS"] = cfg.get("roots", "*")
+    child_env["MINI_MCP_ROOTS"] = roots
+    child_env.pop("LOCAL_MINI_REMOTE_WRITE", None)
+    child_env.pop("LOCAL_MINI_REMOTE_EXEC", None)
 
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
@@ -193,18 +187,21 @@ async def run(cfg: dict[str, Any]) -> None:
                     })
                     raise
 
+                is_error = bool(
+                    getattr(result, "is_error", getattr(result, "isError", False))
+                )
                 audit({
                     "event": "call",
                     "tool": name,
                     "args_hash": args_hash(args),
-                    "status": "ok",
+                    "status": "error" if is_error else "ok",
                     "duration_ms": int((time.monotonic() - started) * 1000),
                 })
                 return result
 
             server = Server(
                 BRIDGE_NAME,
-                version="1.1",
+                version="1.2",
                 on_list_tools=on_list_tools,
                 on_call_tool=on_call_tool,
             )
@@ -232,10 +229,7 @@ async def run(cfg: dict[str, Any]) -> None:
                     self.token = bearer
 
                 async def __call__(self, scope, receive, send):
-                    if (
-                        scope["type"] == "http"
-                        and scope.get("path", "") in prmd_paths
-                    ):
+                    if scope["type"] == "http" and scope.get("path", "") in prmd_paths:
                         await self.app(scope, receive, send)
                         return
                     if scope["type"] != "http":
@@ -257,6 +251,7 @@ async def run(cfg: dict[str, Any]) -> None:
                     "bridge": BRIDGE_NAME,
                     "write_enabled": write_enabled(cfg),
                     "exec_enabled": exec_enabled(cfg),
+                    "roots": roots,
                     "server_sha256": cfg.get("server_sha256"),
                 })
 
@@ -266,7 +261,7 @@ async def run(cfg: dict[str, Any]) -> None:
             log(f"listening http://{host}:{port}/mcp")
             log(
                 f"write_enabled={write_enabled(cfg)} "
-                f"exec_enabled={exec_enabled(cfg)}"
+                f"exec_enabled={exec_enabled(cfg)} roots={roots}"
             )
             await uvicorn.Server(
                 uvicorn.Config(app, host=host, port=port, log_level="warning")
