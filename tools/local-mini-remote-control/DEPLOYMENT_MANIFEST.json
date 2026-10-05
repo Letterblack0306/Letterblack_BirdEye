@@ -1,0 +1,42 @@
+{
+  "schema_version": 2,
+  "package": "local-mini-remote-control",
+  "target_root": "C:\\MCP Local\\Local_Mini_MCP",
+  "authoritative_files": [
+    "mini_local_mcp.py",
+    "remote_bridge/local_bridge.py",
+    "remote_bridge/bridge_config.json"
+  ],
+  "package_support_files": [
+    "verify.ps1",
+    "smoke_mcp.py",
+    "refresh_connector.ps1",
+    "rollback.ps1"
+  ],
+  "preserve": [
+    "remote_bridge/tunnel_credentials.env",
+    "remote_bridge/connect_tunnel.ps1",
+    "remote_bridge/tunnel_switch.ps1",
+    "remote_bridge/start_bridge.ps1",
+    "direct_client.py"
+  ],
+  "default_roots_policy": "target_root_only",
+  "all_roots_requires_explicit_allow_all_roots": true,
+  "expected_remote_tools": [
+    "health",
+    "system_info",
+    "list_drives",
+    "list_dir",
+    "read_text",
+    "stat_path",
+    "file_hash",
+    "write_text",
+    "mkdir",
+    "copy_file",
+    "move_file",
+    "delete_file",
+    "run_process"
+  ],
+  "write_enabled": true,
+  "exec_enabled": true
+}

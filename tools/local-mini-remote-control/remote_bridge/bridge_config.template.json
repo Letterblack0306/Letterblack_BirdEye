@@ -1,0 +1,26 @@
+{
+  "listen_host": "127.0.0.1",
+  "listen_port": 8765,
+  "python": "__FILLED_BY_INSTALLER__",
+  "server": "__FILLED_BY_INSTALLER__",
+  "server_sha256": "__FILLED_BY_INSTALLER__",
+  "roots": "__FILLED_BY_INSTALLER__",
+  "remote_tools": [
+    "health",
+    "system_info",
+    "list_drives",
+    "list_dir",
+    "read_text",
+    "stat_path",
+    "file_hash",
+    "write_text",
+    "mkdir",
+    "copy_file",
+    "move_file",
+    "delete_file",
+    "run_process"
+  ],
+  "write_enabled": true,
+  "exec_enabled": true,
+  "max_exec_timeout_seconds": 300
+}
