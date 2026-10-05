@@ -15,6 +15,7 @@ except Exception:
     from mcp.server.fastmcp import FastMCP as _Server
 
 SERVER_NAME = "letterblack-local-mini"
+DEFAULT_ROOT = Path(__file__).resolve().parent
 mcp = _Server(SERVER_NAME)
 
 
@@ -23,7 +24,8 @@ def _result(ok: bool, **kwargs: Any) -> dict[str, Any]:
 
 
 def _roots() -> list[Path]:
-    raw = os.environ.get("MINI_MCP_ROOTS", "*").strip()
+    raw = os.environ.get("MINI_MCP_ROOTS", str(DEFAULT_ROOT)).strip()
+
     if raw == "*":
         roots: list[Path] = []
         if os.name == "nt":
@@ -44,10 +46,9 @@ def _roots() -> list[Path]:
         item = item.strip()
         if not item:
             continue
-        try:
-            roots.append(Path(item).expanduser().resolve())
-        except Exception:
-            pass
+        roots.append(Path(item).expanduser().resolve())
+    if not roots:
+        roots.append(DEFAULT_ROOT)
     return roots
 
 
@@ -66,8 +67,17 @@ def _allowed(path: str | os.PathLike[str]) -> Path:
     )
 
 
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 @mcp.tool()
 def health() -> dict[str, Any]:
+    """Return runtime identity and the effective allowed roots."""
     return _result(
         True,
         server=SERVER_NAME,
@@ -81,6 +91,7 @@ def health() -> dict[str, Any]:
 
 @mcp.tool()
 def system_info() -> dict[str, Any]:
+    """Return local OS/process identity without changing state."""
     import platform
     elevated = False
     if os.name == "nt":
@@ -103,11 +114,13 @@ def system_info() -> dict[str, Any]:
 
 @mcp.tool()
 def list_drives() -> dict[str, Any]:
+    """Return the filesystem roots authorized for this MCP process."""
     return _result(True, drives=[str(r) for r in _roots()])
 
 
 @mcp.tool()
 def list_dir(path: str, depth: int = 1) -> dict[str, Any]:
+    """List files/directories under an allowed path."""
     base = _allowed(path)
     if not base.is_dir():
         return _result(False, error=f"Not a directory: {base}")
@@ -141,17 +154,18 @@ def list_dir(path: str, depth: int = 1) -> dict[str, Any]:
 
 @mcp.tool()
 def read_text(path: str, max_chars: int = 200_000) -> dict[str, Any]:
+    """Read text from an allowed file."""
     p = _allowed(path)
     if not p.is_file():
         return _result(False, error=f"Not a file: {p}")
     max_chars = max(1, min(int(max_chars), 2_000_000))
     data = p.read_text(encoding="utf-8", errors="replace")
-    truncated = len(data) > max_chars
-    return _result(True, path=str(p), text=data[:max_chars], truncated=truncated)
+    return _result(True, path=str(p), text=data[:max_chars], truncated=len(data) > max_chars)
 
 
 @mcp.tool()
 def stat_path(path: str) -> dict[str, Any]:
+    """Return metadata for an allowed path."""
     p = _allowed(path)
     if not p.exists():
         return _result(False, error=f"Path does not exist: {p}")
@@ -167,36 +181,35 @@ def stat_path(path: str) -> dict[str, Any]:
 
 @mcp.tool()
 def file_hash(path: str, algorithm: str = "sha256") -> dict[str, Any]:
+    """Return SHA-256 evidence for an allowed file."""
     p = _allowed(path)
     if not p.is_file():
         return _result(False, error=f"Not a file: {p}")
     if algorithm.lower() != "sha256":
         return _result(False, error="Only sha256 is supported")
-    h = hashlib.sha256()
-    with p.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-            h.update(chunk)
     return _result(
         True,
         path=str(p),
         algorithm="sha256",
-        sha256=h.hexdigest(),
+        sha256=_sha256(p),
         bytes=p.stat().st_size,
     )
 
 
 @mcp.tool()
 def write_text(path: str, text: str, overwrite: bool = False) -> dict[str, Any]:
+    """Write UTF-8 text under an allowed root."""
     p = _allowed(path)
     if p.exists() and not overwrite:
         return _result(False, error=f"File exists; set overwrite=true: {p}")
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(text, encoding="utf-8")
-    return _result(True, path=str(p), bytes=p.stat().st_size)
+    return _result(True, path=str(p), bytes=p.stat().st_size, sha256=_sha256(p))
 
 
 @mcp.tool()
 def mkdir(path: str, parents: bool = True, exist_ok: bool = True) -> dict[str, Any]:
+    """Create a directory under an allowed root."""
     p = _allowed(path)
     p.mkdir(parents=bool(parents), exist_ok=bool(exist_ok))
     return _result(True, path=str(p))
@@ -204,6 +217,7 @@ def mkdir(path: str, parents: bool = True, exist_ok: bool = True) -> dict[str, A
 
 @mcp.tool()
 def copy_file(src: str, dst: str, overwrite: bool = False) -> dict[str, Any]:
+    """Copy a file between allowed paths."""
     source = _allowed(src)
     target = _allowed(dst)
     if not source.is_file():
@@ -217,13 +231,13 @@ def copy_file(src: str, dst: str, overwrite: bool = False) -> dict[str, Any]:
         src=str(source),
         dst=str(target),
         bytes=target.stat().st_size,
-        sha256=hashlib.sha256(target.read_bytes()).hexdigest()
-        if target.stat().st_size <= 64 * 1024 * 1024 else None,
+        sha256=_sha256(target),
     )
 
 
 @mcp.tool()
 def move_file(src: str, dst: str, overwrite: bool = False) -> dict[str, Any]:
+    """Move a file or directory between allowed paths."""
     source = _allowed(src)
     target = _allowed(dst)
     if not source.exists():
@@ -242,10 +256,11 @@ def move_file(src: str, dst: str, overwrite: bool = False) -> dict[str, Any]:
 
 @mcp.tool()
 def delete_file(path: str) -> dict[str, Any]:
+    """Delete one allowed file and return its pre-delete SHA-256."""
     p = _allowed(path)
     if not p.is_file():
         return _result(False, error=f"Not a file: {p}")
-    before = hashlib.sha256(p.read_bytes()).hexdigest()
+    before = _sha256(p)
     size = p.stat().st_size
     p.unlink()
     return _result(True, path=str(p), bytes_deleted=size, sha256_before=before)
@@ -258,13 +273,13 @@ def run_process(
     cwd: str | None = None,
     timeout_seconds: int = 60,
 ) -> dict[str, Any]:
+    """Run one argv-array process with shell=False. cwd, when set, must be allowed."""
     args = args or []
     workdir = str(_allowed(cwd)) if cwd else None
 
     exe = executable
     if os.path.isabs(exe):
-        exe_path = Path(exe)
-        if not exe_path.exists():
+        if not Path(exe).is_file():
             return _result(False, error=f"Executable not found: {exe}")
     else:
         from shutil import which
