@@ -1,6 +1,7 @@
 param(
   [string]$TargetRoot = 'C:\MCP Local\Local_Mini_MCP',
-  [switch]$NoRestart
+  [switch]$NoRestart,
+  [switch]$NoTunnelRestart
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,7 +15,10 @@ New-Item -ItemType Directory -Force -Path $RemoteBridge | Out-Null
 
 $replace = @(
   @{ Src = Join-Path $PackageRoot 'mini_local_mcp.py'; Dst = Join-Path $TargetRoot 'mini_local_mcp.py' },
-  @{ Src = Join-Path $PackageRoot 'remote_bridge\local_bridge.py'; Dst = Join-Path $RemoteBridge 'local_bridge.py' }
+  @{ Src = Join-Path $PackageRoot 'remote_bridge\local_bridge.py'; Dst = Join-Path $RemoteBridge 'local_bridge.py' },
+  @{ Src = Join-Path $PackageRoot 'remote_bridge\start_bridge.ps1'; Dst = Join-Path $RemoteBridge 'start_bridge.ps1' },
+  @{ Src = Join-Path $PackageRoot 'remote_bridge\connect_tunnel.ps1'; Dst = Join-Path $RemoteBridge 'connect_tunnel.ps1' },
+  @{ Src = Join-Path $PackageRoot 'remote_bridge\tunnel_switch.ps1'; Dst = Join-Path $RemoteBridge 'tunnel_switch.ps1' }
 )
 
 foreach ($item in $replace) {
@@ -54,13 +58,16 @@ if (-not $NoRestart) {
       Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
     }
 
+  # bridge_config.json is authoritative. Clear stale env overrides before launch.
+  Remove-Item Env:LOCAL_MINI_REMOTE_WRITE -ErrorAction SilentlyContinue
+  Remove-Item Env:LOCAL_MINI_REMOTE_EXEC -ErrorAction SilentlyContinue
+
   Start-Sleep -Milliseconds 500
   $python = [string]$template.python
   $out = Join-Path $RemoteBridge 'logs\birdeye.out.log'
   $err = Join-Path $RemoteBridge 'logs\birdeye.err.log'
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $out) | Out-Null
 
-  # Quote the script path explicitly because TargetRoot contains spaces.
   $quotedBridgePath = '"{0}"' -f $bridgePath
   Start-Process -FilePath $python -ArgumentList @($quotedBridgePath) -WorkingDirectory $RemoteBridge -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err
 
@@ -92,6 +99,15 @@ if (-not $NoRestart) {
   Write-Host 'BRIDGE_HEALTH=PASS'
   Write-Host "BRIDGE_WRITE_ENABLED=$($health.write_enabled)"
   Write-Host "BRIDGE_EXEC_ENABLED=$($health.exec_enabled)"
+
+  if (-not $NoTunnelRestart) {
+    & (Join-Path $RemoteBridge 'tunnel_switch.ps1') close
+    & (Join-Path $RemoteBridge 'tunnel_switch.ps1') open
+    if ($LASTEXITCODE -ne 0) {
+      throw 'Tunnel restart failed.'
+    }
+    Write-Host 'TUNNEL_REDISCOVERY=PASS'
+  }
 }
 
 Write-Host "BACKUP_DIR=$BackupRoot"
