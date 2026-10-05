@@ -1,0 +1,26 @@
+{
+  "listen_host": "127.0.0.1",
+  "listen_port": 8765,
+  "python": "C:\\Users\\prave\\AppData\\Local\\Programs\\Python\\Python310\\python.exe",
+  "server": "C:\\MCP Local\\Local_Mini_MCP\\mini_local_mcp.py",
+  "server_sha256": "__FILLED_BY_INSTALLER__",
+  "roots": "*",
+  "remote_tools": [
+    "health",
+    "system_info",
+    "list_drives",
+    "list_dir",
+    "read_text",
+    "stat_path",
+    "file_hash",
+    "write_text",
+    "mkdir",
+    "copy_file",
+    "move_file",
+    "delete_file",
+    "run_process"
+  ],
+  "write_enabled": true,
+  "exec_enabled": true,
+  "max_exec_timeout_seconds": 300
+}
