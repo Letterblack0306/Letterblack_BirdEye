@@ -203,7 +203,10 @@ def write_text(path: str, text: str, overwrite: bool = False) -> dict[str, Any]:
     if p.exists() and not overwrite:
         return _result(False, error=f"File exists; set overwrite=true: {p}")
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(text, encoding="utf-8")
+    # newline="" disables the platform newline translation that would otherwise
+    # rewrite "\n" as "\r\n" on Windows, so file_hash matches the caller's bytes.
+    with p.open("w", encoding="utf-8", newline="") as fh:
+        fh.write(text)
     return _result(True, path=str(p), bytes=p.stat().st_size, sha256=_sha256(p))
 
 

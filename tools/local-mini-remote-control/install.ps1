@@ -111,7 +111,10 @@ $template.server_sha256 = $serverHash
 $template.server = $serverPath
 $template.python = $resolvedPython
 $template.roots = $Roots
-$template | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $configPath -Encoding UTF8
+$configJson = $template | ConvertTo-Json -Depth 10
+# Windows PowerShell 5.1 Set-Content -Encoding UTF8 emits a BOM, which the bridge
+# cannot parse (it reads with encoding="utf-8"). Write BOM-less UTF-8 explicitly.
+[System.IO.File]::WriteAllText($configPath, $configJson, (New-Object System.Text.UTF8Encoding($false)))
 
 if (-not $NoRestart) {
   $bridgePath = Join-Path $RemoteBridge 'local_bridge.py'

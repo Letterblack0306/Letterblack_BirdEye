@@ -30,7 +30,8 @@ def log(msg: str) -> None:
 
 
 def load_config() -> dict[str, Any]:
-    with CONFIG_PATH.open("r", encoding="utf-8") as fh:
+    # utf-8-sig transparently strips a BOM if one is present and is a no-op otherwise.
+    with CONFIG_PATH.open("r", encoding="utf-8-sig") as fh:
         return json.load(fh)
 
 
