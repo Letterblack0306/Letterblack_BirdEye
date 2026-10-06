@@ -806,14 +806,73 @@ def _is_mutating_command(argv: tuple[str, ...]) -> bool:
     if not argv or len(argv) < 2:
         return False
     exe = Path(argv[0]).name.lower()
-    if exe == "git":
-        return argv[1].lower() in {"add", "commit", "fetch", "pull", "merge", "rebase"}
-    if exe in {"npm", "npm.cmd"}:
-        return argv[1].lower() in {"install", "ci"}
+    verb = argv[1].lower()
+    if exe in {"git", "git.exe"}:
+        return verb not in {
+            "status", "diff", "log", "show", "rev-parse", "ls-files",
+            "grep", "remote", "config",
+        }
+    if exe in {"npm", "npm.cmd", "npm.exe"}:
+        return verb in {"install", "ci", "publish"}
     if exe in {"python", "python.exe", "python3"}:
-        if argv[1:3] == ["-m", "pip"]:
+        if argv[1:3] == ("-m", "pip"):
             return any(a == "install" for a in argv[3:])
     return False
+
+
+def _lbe_before_spawn(workspace: Workspace, argv: tuple[str, ...]) -> dict[str, Any]:
+    """Enforce machine LBE authority at the final subprocess boundary."""
+    try:
+        from authority import bridge_guard as bg
+        from authority import controller as authority_controller
+    except Exception as exc:
+        if _is_mutating_command(argv):
+            return {
+                "decision": "DENY",
+                "reason": "LBE_AUTHORITY_UNAVAILABLE",
+                "detail": str(exc),
+                "spawned": False,
+            }
+        return {"decision": "NOT_REQUIRED", "reason": "read_only", "spawned": False}
+
+    effect = bg.effect_for_argv(argv)
+    if not bg.requires_authority_for_argv(argv):
+        return {
+            "decision": "NOT_REQUIRED",
+            "reason": "read_only",
+            "effect": effect,
+            "spawned": False,
+        }
+
+    capability = bg.capability_for_argv(argv)
+    targets = bg.targets_for_argv(argv, workspace.path)
+    try:
+        receipt = bg.authorize_mutation(
+            capability=capability,
+            targets=targets,
+            workspace=workspace.name,
+            operation="workspace-exec",
+            effect=effect,
+        )
+    except bg.MutationDenied as exc:
+        return {
+            "decision": "DENY",
+            "reason": exc.reason,
+            "receipt": exc.receipt,
+            "capability": capability,
+            "targets": targets,
+            "effect": effect,
+            "spawned": False,
+        }
+
+    return {
+        "decision": authority_controller.ALLOW,
+        "receipt": receipt,
+        "capability": capability,
+        "targets": targets,
+        "effect": effect,
+        "spawned": False,
+    }
 
 
 def _execute_argv(
@@ -832,6 +891,42 @@ def _execute_argv(
     head_before = None
     head_after = None
     head_ok = False
+
+    authority_decision = _lbe_before_spawn(workspace, argv)
+    if authority_decision.get("decision") == "DENY":
+        elapsed = round(time.monotonic() - started, 3)
+        result = {
+            "ok": False,
+            "workspace": workspace.name,
+            "cwd": f"<workspace:{workspace.name}>",
+            "argv": list(argv),
+            "timeout_seconds": timeout_seconds,
+            "started_at": started_at,
+            "completed_at": utc_now(),
+            "elapsed_seconds": elapsed,
+            "timed_out": False,
+            "exit_code": None,
+            "stdout": "",
+            "stderr": "",
+            "classification": "authority_denied",
+            "spawned": False,
+            "error": authority_decision.get("reason"),
+            "authority": authority_decision,
+        }
+        _append_journal(
+            config_path,
+            workspace=workspace.name,
+            task_id=task_id,
+            argv=argv,
+            exit_code=None,
+            duration=elapsed,
+            head_before=None,
+            head_after=None,
+            classification="authority_denied",
+            timed_out=False,
+            error=authority_decision.get("reason"),
+        )
+        return result
 
     if capture_mutation:
         head_before, head_ok = _git_head(workspace.path)
@@ -894,6 +989,8 @@ def _execute_argv(
         "stdout": _truncate(stdout),
         "stderr": _truncate(stderr),
         "classification": classification,
+        "spawned": True,
+        "authority": {**authority_decision, "spawned": True},
     }
 
     if capture_mutation:
@@ -984,7 +1081,7 @@ def run_command(request: RunRequest, config_path: Path) -> dict[str, Any]:
         capture_mutation=capture_mutation,
         history=history,
     )
-    result["authority"] = gate
+    result["compatibility_preflight"] = gate
     result["reconciliation"] = {
         "performed": isinstance(result.get("execution_evidence"), dict),
         "source": "runtime",
@@ -1044,7 +1141,7 @@ def run_sequence(request: RunSequenceRequest, config_path: Path) -> dict[str, An
         )
         step_result["index"] = index
         step_result["step_id"] = step.step_id
-        step_result["authority"] = gate
+        step_result["compatibility_preflight"] = gate
         step_result["reconciliation"] = {
             "performed": isinstance(step_result.get("execution_evidence"), dict),
             "source": "runtime",

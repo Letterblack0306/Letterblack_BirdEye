@@ -166,6 +166,12 @@ def authorize(
     if not allowed:
         raise AuthorityDenied("AUTHORITY_PATHS_UNDECLARED", decision)
 
+    # Resolve targets before effect evaluation. Effect-only operations such as
+    # publication legitimately have no filesystem target; an empty target list
+    # is therefore meaningful input, not missing state.
+    resolved = _normalize_targets(targets, ws)
+    targets_is_empty = not resolved
+
     # 7. effect scope. Path scope cannot constrain an operation whose effect
     # leaves the workspace, because such an operation may carry no path at all.
     # The intent must therefore authorize the kind of effect requested.
@@ -186,7 +192,6 @@ def authorize(
                 },
             )
     elif not requested_effect and not declared_effects and targets_is_empty:
-        # No effect could be determined and the intent declares none: ambiguous.
         raise AuthorityDenied("EFFECT_UNDETERMINED", decision)
 
     # Workspace rules may independently forbid an effect the intent allows.
@@ -213,8 +218,6 @@ def authorize(
                  "message": "Workspace publication is locked; it cannot be authorized by intent alone."},
             )
 
-    resolved = _normalize_targets(targets, ws)
-    targets_is_empty = not resolved
     for target in resolved:
         if any(_contains(d, target) for d in deny):
             raise AuthorityDenied("PATH_DENIED", {**decision, "target": str(target)})
@@ -259,6 +262,7 @@ def receipt(decision: dict[str, Any]) -> dict[str, Any]:
         "capability": decision.get("capability"),
         "operation": decision.get("operation"),
         "workspace": decision.get("workspace"),
+        "effect": decision.get("effect"),
         "authority": decision.get("authority"),
         "decision_hash": hashlib.sha256(payload).hexdigest(),
     }

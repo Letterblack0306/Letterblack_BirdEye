@@ -488,6 +488,51 @@ _BIRDEYE_VERIFY_HASH_SCHEMA = {
     },
 }
 
+_LBE_WHOAMI_SCHEMA = {
+    "name": "lbe_whoami",
+    "description": "Report this MCP connection's OS-derived identity. Caller-supplied actor/session claims are ignored.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {"actor": {"type": "string"}, "session_id": {"type": "string"}},
+        "required": [],
+    },
+}
+_LBE_ESTABLISH_SCHEMA = {
+    "name": "lbe_establish",
+    "description": "Establish a server-owned UNBOUND LBE authority session for this BirdEye MCP process/connection.",
+    "inputSchema": {"type": "object", "properties": {"workspace": {"type": "string"}}, "required": []},
+}
+_LBE_CURRENT_SCHEMA = {
+    "name": "lbe_current",
+    "description": "Read this connection's current LBE session/intent context. Grants no authority.",
+    "inputSchema": {"type": "object", "properties": {}, "required": []},
+}
+_LBE_AUTHORIZE_SCHEMA = {
+    "name": "lbe_authorize",
+    "description": "Dry-run one LBE authorization decision. Executes nothing; workspace_run is the controlled execution route.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "capability": {"type": "string"},
+            "targets": {"type": "array", "items": {"type": "string"}},
+            "workspace": {"type": "string"},
+            "operation": {"type": "string"},
+            "effect": {"type": "string"},
+        },
+        "required": ["capability"],
+    },
+}
+_LBE_INTENT_SHOW_SCHEMA = {
+    "name": "lbe_intent_show",
+    "description": "Read authoritative lifecycle/slice state for a registered LBE intent.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {"intent_id": {"type": "string"}},
+        "required": ["intent_id"],
+    },
+}
+
+
 _TOOL_DEFINITIONS = [
     _KNOWLEDGE_ROUTE_SCHEMA,
     _KNOWLEDGE_READ_SCHEMA,
@@ -512,6 +557,11 @@ _TOOL_DEFINITIONS = [
     _WORKSPACE_COMMAND_HISTORY_SCHEMA,
     _REVISION_STATUS_SCHEMA,
     _LOCAL_PROJECTS_SCHEMA,
+    _LBE_WHOAMI_SCHEMA,
+    _LBE_ESTABLISH_SCHEMA,
+    _LBE_CURRENT_SCHEMA,
+    _LBE_AUTHORIZE_SCHEMA,
+    _LBE_INTENT_SHOW_SCHEMA,
 ]
 
 _TOOL_REGISTRY = {
@@ -538,6 +588,11 @@ _TOOL_REGISTRY = {
     "workspace_command_history": ("limit", "workspace"),
     "revision_status": ("workspace",),
     "local_projects": ("project",),
+    "lbe_whoami": ("actor", "session_id"),
+    "lbe_establish": ("workspace",),
+    "lbe_current": (),
+    "lbe_authorize": ("capability", "targets", "workspace", "operation", "effect"),
+    "lbe_intent_show": ("intent_id",),
 }
 
 
@@ -1335,6 +1390,9 @@ def invoke(tool: str, params: dict[str, Any]) -> dict[str, Any]:
             )
         if tool == "skills":
             return _skills_call(**params)
+        if tool in {"lbe_whoami", "lbe_establish", "lbe_current", "lbe_authorize", "lbe_intent_show"}:
+            from authority import control_plane
+            return control_plane.dispatch(tool, params)
         if tool == "workspace_identity":
             return workspace_identity(params.get("workspace"))
         if tool == "workspace_run":

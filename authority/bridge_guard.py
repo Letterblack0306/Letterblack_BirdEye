@@ -160,11 +160,74 @@ def capability_for_argv(argv: tuple[str, ...]) -> str:
         return "process.exec"
     exe = Path(str(argv[0])).name.lower()
     verb = str(argv[1]).lower() if len(argv) > 1 else ""
-    if exe == "git":
+    if exe in {"git", "git.exe"}:
         if verb in {"commit", "push", "merge", "rebase"}:
             return "git.mutate"
         return "process.exec"
     return "process.exec"
+
+
+def targets_for_argv(argv: tuple[str, ...], workspace_path: Path) -> list[str]:
+    """Return concrete workspace targets whose mutation can be determined.
+
+    Effect-only commands such as git push intentionally return no target: their
+    consequence is governed by effect scope instead. Ambiguous contained
+    mutations fall back to the workspace root so path authority fails closed.
+    """
+    if not argv:
+        return []
+    exe = Path(str(argv[0])).name.lower()
+    verb = str(argv[1]).lower() if len(argv) > 1 else ""
+    if exe in {"git", "git.exe"}:
+        if verb in {"push", "fetch", "pull"}:
+            return []
+        if verb in {"add", "commit", "restore", "checkout"}:
+            out: list[str] = []
+            skip_next = False
+            for raw in argv[2:]:
+                value = str(raw)
+                if skip_next:
+                    skip_next = False
+                    continue
+                if value in {"-m", "--message", "-C", "--reuse-message", "-c", "--reedit-message"}:
+                    skip_next = True
+                    continue
+                if value.startswith("-"):
+                    continue
+                candidate = Path(value)
+                if not candidate.is_absolute():
+                    candidate = workspace_path / candidate
+                try:
+                    resolved = candidate.resolve()
+                    resolved.relative_to(workspace_path.resolve())
+                except (OSError, ValueError):
+                    continue
+                out.append(str(resolved))
+            if out:
+                return out
+        return [str(workspace_path.resolve())]
+    return [str(workspace_path.resolve())]
+
+
+def requires_authority_for_argv(argv: tuple[str, ...]) -> bool:
+    """Return True when the command can create a durable/external effect."""
+    if not argv:
+        return False
+    exe = Path(str(argv[0])).name.lower()
+    verb = str(argv[1]).lower() if len(argv) > 1 else ""
+    effect = effect_for_argv(argv)
+    if effect != ctl.CONTAINED_EFFECT:
+        return True
+    if exe in {"git", "git.exe"}:
+        return verb not in {
+            "status", "diff", "log", "show", "rev-parse", "ls-files",
+            "grep", "remote", "config",
+        }
+    if exe in {"npm", "npm.cmd", "npm.exe"}:
+        return verb in {"install", "ci", "publish"}
+    if exe in {"python", "python.exe", "python3"}:
+        return len(argv) > 3 and argv[1:3] == ("-m", "pip") and "install" in argv[3:]
+    return False
 
 
 # Effect classification derived from observable command semantics, not from a

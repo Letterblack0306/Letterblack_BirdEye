@@ -189,6 +189,7 @@ def op_authorize(supplied: dict) -> dict:
             targets=supplied.get("targets") or [],
             workspace=supplied.get("workspace") or ctx.get("workspace"),
             operation=supplied.get("operation"),
+            effect=supplied.get("effect"),
         )
     except ctl.AuthorityDenied as exc:
         rec = {
@@ -197,6 +198,7 @@ def op_authorize(supplied: dict) -> dict:
             "intent_id": ctx["intent_id"], "actor": ctx["actor"],
             "capability": supplied.get("capability"),
             "operation": supplied.get("operation"),
+            "effect": supplied.get("effect"),
             "targets": supplied.get("targets"), "ts": time.time(), "identity": ident,
         }
         rec["receipt_id"] = ctl.receipt(rec)["receipt_id"]
@@ -275,13 +277,15 @@ def build_server():
     @mcp.tool()
     def lbe_authorize(capability: str, targets: list[str] | None = None,
                       workspace: str | None = None,
-                      operation: str | None = None) -> dict:
+                      operation: str | None = None,
+                      effect: str | None = None) -> dict:
         """Authorize one requested mutation. Executes nothing.
 
         Returns ALLOW with a receipt, or DENY with a reason and a denial receipt.
         """
         return op_authorize({"capability": capability, "targets": targets or [],
-                             "workspace": workspace, "operation": operation})
+                             "workspace": workspace, "operation": operation,
+                             "effect": effect})
 
     @mcp.tool()
     def lbe_intent_show(intent_id: str) -> dict:
