@@ -14,6 +14,23 @@ python mcp_server.py --stdio
 
 Clients should use the configured Python interpreter for the installation rather than assuming a global `python` command exists.
 
+For connector clients that require Streamable HTTP, BirdEye also has a canonical loopback transport:
+
+```text
+python http_mcp_server.py
+# http://127.0.0.1:8766/mcp
+```
+
+The HTTP transport reuses `mcp_server.py`'s existing tool registry and `invoke()` authority path; it does not implement a second BirdEye capability layer. It refuses non-loopback binds. Remote reachability belongs to a separate authenticated tunnel/relay. Set `BIRDEYE_HTTP_TOKEN` only when the local connector/tunnel is configured to send a matching Bearer header; otherwise the loopback endpoint remains local-only without a second sign-in flow.
+
+After starting the server, verify the real MCP path rather than only checking the port:
+
+```text
+python tools/smoke_birdeye_http.py
+```
+
+Acceptance requires `BIRDEYE_HTTP_SMOKE=PASS`; that smoke performs MCP initialize, validates the required full-BirdEye tool set, and calls `birdeye_status` through the HTTP endpoint.
+
 For a new maintainer or agent, read these documents in order:
 
 1. [Repository guide](docs/REPOSITORY_GUIDE.md) — architecture, evidence hierarchy, important files, and operating rules.
