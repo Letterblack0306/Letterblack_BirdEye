@@ -25,6 +25,8 @@ from workspace_bridge import (
     command_history,
     run_command,
     run_sequence,
+    workspace_read_text,
+    workspace_write_text,
     utc_now,
 )
 from workspace_identity import revision_status, workspace_identity
@@ -374,8 +376,8 @@ _WORKSPACE_RUN_SCHEMA = {
             "request_id": {"type": "string", "description": "Optional caller-supplied request ID."},
             "task_id": {"type": "string", "description": "Optional task/session identifier for journaling."},
             "intent": {"type": "string", "description": "Stable operation intent used for scoped failure reconciliation and circuit breaking."},
-            "capability": {"type": "string", "description": "Runtime capability. Mutations require workspace.mutate."},
-            "context_evidence": {"type": "object", "description": "Evidence returned by context providers; mutations must include matching workspace."},
+            "capability": {"type": "string", "description": "Optional runtime capability for elevated mutations. Low-risk reads and routine workspace-local mutations do not require it."},
+            "context_evidence": {"type": "object", "description": "Optional runtime evidence. Required only for elevated mutations that need workspace.mutate."},
         },
         "required": ["workspace", "argv"],
     },
@@ -405,8 +407,8 @@ _WORKSPACE_RUN_SEQUENCE_SCHEMA = {
             "request_id": {"type": "string"},
             "task_id": {"type": "string"},
             "intent": {"type": "string"},
-            "capability": {"type": "string", "description": "Runtime capability. Mutations require workspace.mutate."},
-            "context_evidence": {"type": "object"},
+            "capability": {"type": "string", "description": "Optional runtime capability for elevated mutations."},
+            "context_evidence": {"type": "object", "description": "Required only when an elevated mutation needs workspace.mutate."},
         },
         "required": ["workspace", "commands"],
     },
@@ -422,6 +424,36 @@ _WORKSPACE_COMMAND_HISTORY_SCHEMA = {
             "workspace": {"type": "string", "description": "Optional workspace filter."},
         },
         "required": [],
+    },
+}
+
+_WORKSPACE_READ_TEXT_SCHEMA = {
+    "name": "workspace_read_text",
+    "description": "Read a UTF-8 text file inside a registered workspace. Secret-like paths and workspace escapes are denied.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "workspace": {"type": "string", "description": "Configured workspace ID."},
+            "path": {"type": "string", "description": "Workspace-relative file path."},
+            "max_chars": {"type": "integer", "minimum": 1, "maximum": 1000000, "description": "Maximum characters to return."},
+        },
+        "required": ["workspace", "path"],
+    },
+}
+
+_WORKSPACE_WRITE_TEXT_SCHEMA = {
+    "name": "workspace_write_text",
+    "description": "Atomically write UTF-8 text inside a registered workspace with before/after SHA-256 evidence. Routine source/config writes auto-allow; .git, .governance, .lbe, operator-kit, secret-like paths, and workspace escapes are denied.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "workspace": {"type": "string", "description": "Configured workspace ID."},
+            "path": {"type": "string", "description": "Workspace-relative file path."},
+            "content": {"type": "string", "description": "Complete UTF-8 file contents."},
+            "expected_sha256": {"type": "string", "description": "Optional optimistic-concurrency SHA-256 of the existing file."},
+            "task_id": {"type": "string", "description": "Optional task/session identifier for journaling."},
+        },
+        "required": ["workspace", "path", "content"],
     },
 }
 
@@ -536,6 +568,8 @@ _TOOL_DEFINITIONS = [
     _WORKSPACE_RUN_SCHEMA,
     _WORKSPACE_RUN_SEQUENCE_SCHEMA,
     _WORKSPACE_COMMAND_HISTORY_SCHEMA,
+    _WORKSPACE_READ_TEXT_SCHEMA,
+    _WORKSPACE_WRITE_TEXT_SCHEMA,
     _CAPABILITY_DISCOVER_SCHEMA,
     _CAPABILITY_INVOKE_SCHEMA,
     _REVISION_STATUS_SCHEMA,
@@ -564,6 +598,8 @@ _TOOL_REGISTRY = {
     "workspace_run": ("workspace", "argv", "timeout_seconds", "request_id", "task_id", "intent", "capability", "context_evidence"),
     "workspace_run_sequence": ("workspace", "commands", "stop_on_failure", "request_id", "task_id", "intent", "capability", "context_evidence"),
     "workspace_command_history": ("limit", "workspace"),
+    "workspace_read_text": ("workspace", "path", "max_chars"),
+    "workspace_write_text": ("workspace", "path", "content", "expected_sha256", "task_id"),
     "capability_discover": ("name",),
     "capability_invoke": ("name", "request"),
     "revision_status": ("workspace",),
@@ -1378,6 +1414,22 @@ def invoke(tool: str, params: dict[str, Any]) -> dict[str, Any]:
                 CONFIG_PATH,
                 limit=int(params.get("limit", 50)),
                 workspace=params.get("workspace"),
+            )
+        if tool == "workspace_read_text":
+            return workspace_read_text(
+                str(params.get("workspace", "")),
+                str(params.get("path", "")),
+                CONFIG_PATH,
+                max_chars=int(params.get("max_chars", 200000)),
+            )
+        if tool == "workspace_write_text":
+            return workspace_write_text(
+                str(params.get("workspace", "")),
+                str(params.get("path", "")),
+                params.get("content"),
+                CONFIG_PATH,
+                expected_sha256=params.get("expected_sha256"),
+                task_id=params.get("task_id"),
             )
         if tool == "capability_discover":
             return capability_discover(params.get("name"))
