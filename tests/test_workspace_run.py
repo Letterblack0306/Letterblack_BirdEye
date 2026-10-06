@@ -112,10 +112,11 @@ def test_diagnostic_git_allowed():
     assert "git" in reason
 
 
-def test_git_push_is_blocked():
+def test_git_push_is_transport_allowed_and_mutating():
     allowed, reason = _command_allowed(("git", "push", "origin", "main"), Path("."))
-    assert allowed is False
-    assert "push" in reason.lower()
+    assert allowed is True
+    assert "generic" in reason.lower()
+    assert _is_mutating_command(("git", "push", "origin", "main")) is True
 
 
 def test_git_add_is_mutating():
@@ -130,28 +131,24 @@ def test_npm_install_is_mutating():
     assert _is_mutating_command(("npm.cmd", "test")) is False
 
 
-def test_powershell_wrapper_is_blocked():
-    allowed, reason = _command_allowed(("powershell", "-Command", "Get-Process"), Path("."))
-    assert allowed is False
-    assert "shell wrappers are forbidden" in reason
+def test_shell_wrappers_are_transport_allowed():
+    for argv in (
+        ("powershell", "-Command", "Get-Process"),
+        ("bash", "-c", "echo hi"),
+        ("cmd", "/c", "echo hi"),
+    ):
+        allowed, reason = _command_allowed(argv, Path("."))
+        assert allowed is True
+        assert "generic" in reason.lower()
 
 
-def test_bash_wrapper_is_blocked():
-    allowed, reason = _command_allowed(("bash", "-c", "echo hi"), Path("."))
-    assert allowed is False
-    assert "shell wrappers are forbidden" in reason
-
-
-def test_cmd_wrapper_is_blocked():
-    allowed, reason = _command_allowed(("cmd", "/c", "echo hi"), Path("."))
-    assert allowed is False
-    assert "shell wrappers are forbidden" in reason
-
-
-def test_dangerous_reg_command_blocked():
+def test_dangerous_executable_is_not_transport_hardcoded():
     allowed, reason = _command_allowed(("reg", "add"), Path("."))
-    assert allowed is False
-    assert "dangerous executable" in reason
+    assert allowed is True
+    assert "generic" in reason.lower()
+    dangerous, dangerous_reason = _is_dangerous_command(("reg", "add"))
+    assert dangerous is True
+    assert "dangerous executable" in dangerous_reason
 
 
 def test_run_command_path_escape_rejected(tmp_path):
@@ -316,6 +313,7 @@ def test_mcp_tools_list_exposes_only_allowed_tools():
     assert "workspace_command_history" in names
     assert "workspace_identity" in names
     assert "revision_status" in names
+    assert "workspace_run" in names
     for forbidden in ("terminal", "shell", "powershell", "exec", "run_anything"):
         assert forbidden not in names
 
@@ -365,57 +363,78 @@ def test_stdout_stderr_captured(tmp_path, monkeypatch):
     assert result["stderr"] == "err data"
     assert result["exit_code"] == 2
     assert result["ok"] is False
-def test_curl_executable_rejected():
-    allowed, reason = _command_allowed(("curl", "https://example.com"), Path("."))
-    assert allowed is False
-    assert "not allowlisted" in reason.lower()
+def test_generic_executables_are_transport_allowed():
+    for argv in (
+        ("curl", "https://example.com"),
+        ("certutil", "-decode", "x"),
+        ("rundll32", "shell32.dll", "Control_RunDLL"),
+        ("python", "arbitrary_script.py"),
+        ("python", "-c", "print('ok')"),
+        ("npm.cmd", "exec", "something"),
+        ("unknown.exe", "arg"),
+        ("StarDesk.exe",),
+    ):
+        allowed, reason = _command_allowed(argv, Path("."))
+        assert allowed is True
+        assert "generic" in reason.lower()
 
-def test_certutil_rejected():
-    allowed, reason = _command_allowed(("certutil", "-decode", "x"), Path("."))
-    assert allowed is False
-    assert "not allowlisted" in reason.lower()
 
-def test_rundll32_rejected():
-    allowed, reason = _command_allowed(("rundll32", "shell32.dll", "Control_RunDLL"), Path("."))
-    assert allowed is False
-    assert "not allowlisted" in reason.lower()
-
-def test_arbitrary_python_script_rejected():
-    allowed, reason = _command_allowed(("python", "arbitrary_script.py"), Path("."))
-    assert allowed is False
-    assert "not allowlisted" in reason.lower()
-
-def test_python_c_flag_rejected():
-    allowed, reason = _command_allowed(("python", "-c", "import os; os.system('ls')"), Path("."))
-    assert allowed is False
-    assert "not allowlisted" in reason.lower()
-
-def test_unknown_npm_command_rejected():
-    allowed, reason = _command_allowed(("npm.cmd", "exec", "something"), Path("."))
-    assert allowed is False
-    assert "not allowlisted" in reason.lower()
-
-def test_arbitrary_npm_command_rejected():
-    allowed, reason = _command_allowed(("npm.cmd", "arbitrary"), Path("."))
-    assert allowed is False
-    assert "not allowlisted" in reason.lower()
-
-def test_unknown_exe_rejected():
-    allowed, reason = _command_allowed(("unknown.exe", "arg"), Path("."))
-    assert allowed is False
-    assert "not allowlisted" in reason.lower()
-
-def test_run_command_rejects_arbitrary_executable(tmp_path):
+def test_generic_execution_requires_execute_capability(tmp_path):
     config = _config(tmp_path)
-    with pytest.raises(BridgeError, match="command not allowlisted"):
-        run_command(RunRequest("demo", ("curl", "https://example.com")), config)
+    with pytest.raises(BridgeError, match="workspace.execute"):
+        run_command(RunRequest("demo", ("StarDesk.exe",)), config)
 
-def test_run_command_rejects_arbitrary_python(tmp_path):
-    config = _config(tmp_path)
-    with pytest.raises(BridgeError, match="not allowlisted"):
-        run_command(RunRequest("demo", ("python", "evil.py")), config)
 
-def test_run_command_rejects_unknown_npm(tmp_path):
+def test_generic_execution_runs_with_execute_capability(tmp_path, monkeypatch):
     config = _config(tmp_path)
-    with pytest.raises(BridgeError, match="not allowlisted"):
-        run_command(RunRequest("demo", ("npm.cmd", "exec", "something")), config)
+    captured = {}
+
+    def fake_run(args, *, cwd, shell, **kwargs):
+        captured["args"] = args
+        captured["cwd"] = str(cwd)
+        captured["shell"] = shell
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr("workspace_bridge.subprocess.run", fake_run)
+    result = run_command(
+        RunRequest(
+            "demo",
+            ("StarDesk.exe", "--open"),
+            capability="workspace.execute",
+            context_evidence={"workspace": "demo"},
+        ),
+        config,
+    )
+    assert result["ok"] is True
+    assert captured["args"] == ["StarDesk.exe", "--open"]
+    assert captured["shell"] is False
+    assert result["authority"]["capability"] == "workspace.execute"
+
+
+def test_absolute_executable_path_is_allowed_with_execute_capability(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    captured = {}
+
+    def fake_run(args, *, cwd, shell, **kwargs):
+        captured["args"] = args
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr("workspace_bridge.subprocess.run", fake_run)
+    executable = r"C:\\Program Files\\StarDesk\\StarDesk.exe"
+    result = run_command(
+        RunRequest(
+            "demo",
+            (executable,),
+            capability="workspace.execute",
+            context_evidence={"workspace": "demo"},
+        ),
+        config,
+    )
+    assert result["ok"] is True
+    assert captured["args"][0] == executable
+
+
+def test_git_push_requires_mutate_capability(tmp_path):
+    config = _config(tmp_path)
+    with pytest.raises(BridgeError, match="workspace.mutate"):
+        run_command(RunRequest("demo", ("git", "push", "origin", "main")), config)
