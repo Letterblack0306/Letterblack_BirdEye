@@ -363,7 +363,7 @@ _REVISION_STATUS_SCHEMA = {
 
 _WORKSPACE_RUN_SCHEMA = {
     "name": "workspace_run",
-    "description": "Execute a single argv-array command inside a verified workspace with policy control.",
+    "description": "Execute any direct argv-array command inside a verified workspace through BirdEye authority. No application allowlist; generic execution requires workspace.execute and known workspace mutations require workspace.mutate.",
     "inputSchema": {
         "type": "object",
         "properties": {
@@ -373,7 +373,7 @@ _WORKSPACE_RUN_SCHEMA = {
             "request_id": {"type": "string", "description": "Optional caller-supplied request ID."},
             "task_id": {"type": "string", "description": "Optional task/session identifier for journaling."},
             "intent": {"type": "string", "description": "Stable operation intent used for scoped failure reconciliation and circuit breaking."},
-            "capability": {"type": "string", "description": "Runtime capability. Mutations require workspace.mutate."},
+            "capability": {"type": "string", "description": "Runtime capability. Generic execution requires workspace.execute; known workspace mutations require workspace.mutate."},
             "context_evidence": {"type": "object", "description": "Evidence returned by context providers; mutations must include matching workspace."},
         },
         "required": ["workspace", "argv"],
