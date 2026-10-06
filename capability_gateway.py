@@ -10,6 +10,8 @@ from workspace_bridge import (
     RunSequenceRequest,
     run_command,
     run_sequence,
+    workspace_read_text,
+    workspace_write_text,
 )
 
 BIRDEYE_DIR = Path(__file__).resolve().parent
@@ -41,16 +43,31 @@ _CAPABILITIES: tuple[CapabilityOwner, ...] = (
         owner="workspace_bridge.run_command",
         authority_path="RunRequest -> resolve_workspace -> _command_allowed -> _authority_gate -> _execute_argv -> execution receipt",
         invocation="live",
-        mutation_authority="workspace.mutate",
-        notes="Single governed argv-array command inside a registered workspace.",
+        mutation_authority="risk-tiered",
+        notes="Single workspace argv-array command. Low/routine actions auto-allow; elevated mutations require workspace.mutate.",
     ),
     CapabilityOwner(
         name="workspace.sequence",
         owner="workspace_bridge.run_sequence",
         authority_path="RunSequenceRequest -> resolve_workspace -> per-command policy/authority -> execution receipt",
         invocation="live",
-        mutation_authority="workspace.mutate",
-        notes="Ordered governed command sequence inside a registered workspace.",
+        mutation_authority="risk-tiered",
+        notes="Ordered workspace command sequence. Low/routine actions auto-allow; elevated mutations require workspace.mutate.",
+    ),
+    CapabilityOwner(
+        name="workspace.read-text",
+        owner="workspace_bridge.workspace_read_text",
+        authority_path="workspace -> bounded relative path -> secret guard -> read/hash receipt",
+        invocation="live",
+        notes="Read UTF-8 text inside a registered workspace without manual approval.",
+    ),
+    CapabilityOwner(
+        name="workspace.write-text",
+        owner="workspace_bridge.workspace_write_text",
+        authority_path="workspace -> bounded relative path -> protected/secret guard -> atomic write -> before/after hash receipt",
+        invocation="live",
+        mutation_authority="routine-auto",
+        notes="Routine source/config text writes inside the workspace auto-allow; protected governance/.git/.lbe paths remain blocked.",
     ),
     CapabilityOwner(
         name="github.request-bridge",
@@ -109,6 +126,26 @@ def capability_invoke(name: str, request: dict[str, Any], config_path: Path) -> 
         result = run_command(RunRequest.from_mapping(request), config_path)
     elif name == "workspace.sequence":
         result = run_sequence(RunSequenceRequest.from_mapping(request), config_path)
+    elif name == "workspace.read-text":
+        result = workspace_read_text(
+            str(request.get("workspace", "")),
+            str(request.get("path", "")),
+            config_path,
+            max_chars=int(request.get("max_chars", 200000)),
+        )
+    elif name == "workspace.write-text":
+        allowed = {"workspace", "path", "content", "expected_sha256", "task_id"}
+        extra = sorted(set(request) - allowed)
+        if extra:
+            raise BridgeError(f"Unsupported request fields: {', '.join(extra)}")
+        result = workspace_write_text(
+            str(request.get("workspace", "")),
+            str(request.get("path", "")),
+            request.get("content"),
+            config_path,
+            expected_sha256=request.get("expected_sha256"),
+            task_id=request.get("task_id"),
+        )
     else:
         known = next((item for item in _CAPABILITIES if item.name == name), None)
         if known is None:
