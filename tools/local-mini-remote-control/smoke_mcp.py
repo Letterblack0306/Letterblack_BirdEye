@@ -6,8 +6,25 @@ import asyncio
 import hashlib
 import json
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+
+
+@asynccontextmanager
+async def _http_client(headers: dict[str, str]):
+    """Yield an httpx AsyncClient carrying the bearer token.
+
+    The installed mcp SDK's streamable_http_client() accepts an http_client
+    but no headers= argument, so auth must be attached to the client itself.
+    """
+    import httpx
+
+    client = httpx.AsyncClient(headers=headers, timeout=60.0)
+    try:
+        yield client
+    finally:
+        await client.aclose()
 
 
 def _payload(result: Any) -> dict[str, Any]:
@@ -53,46 +70,47 @@ async def main() -> None:
         "move_file", "delete_file", "run_process",
     }
 
-    async with streamable_http_client(args.url, headers=headers) as streams:
-        read, write = streams[0], streams[1]
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            listed = await session.list_tools()
-            names = {tool.name for tool in listed.tools}
-            missing = sorted(required - names)
-            if missing:
-                raise RuntimeError("tools/list missing: " + ",".join(missing))
+    async with _http_client(headers) as client:
+        async with streamable_http_client(args.url, http_client=client) as streams:
+            read, write = streams[0], streams[1]
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                listed = await session.list_tools()
+                names = {tool.name for tool in listed.tools}
+                missing = sorted(required - names)
+                if missing:
+                    raise RuntimeError("tools/list missing: " + ",".join(missing))
 
-            try:
-                result = _payload(await session.call_tool(
-                    "write_text",
-                    {"path": str(test_path), "text": test_text, "overwrite": True},
-                ))
-                if not result.get("ok"):
-                    raise RuntimeError(f"write_text failed: {result}")
-
-                result = _payload(await session.call_tool(
-                    "file_hash", {"path": str(test_path)}
-                ))
-                if not result.get("ok") or result.get("sha256") != expected_hash:
-                    raise RuntimeError(f"file_hash mismatch: {result}")
-
-                result = _payload(await session.call_tool(
-                    "run_process",
-                    {
-                        "executable": args.python,
-                        "args": ["-c", "print('SMOKE_EXEC_OK')"],
-                        "cwd": str(Path(args.root).resolve()),
-                        "timeout_seconds": 20,
-                    },
-                ))
-                if not result.get("ok") or "SMOKE_EXEC_OK" not in result.get("stdout", ""):
-                    raise RuntimeError(f"run_process failed: {result}")
-            finally:
                 try:
-                    await session.call_tool("delete_file", {"path": str(test_path)})
-                except Exception:
-                    pass
+                    result = _payload(await session.call_tool(
+                        "write_text",
+                        {"path": str(test_path), "text": test_text, "overwrite": True},
+                    ))
+                    if not result.get("ok"):
+                        raise RuntimeError(f"write_text failed: {result}")
+
+                    result = _payload(await session.call_tool(
+                        "file_hash", {"path": str(test_path)}
+                    ))
+                    if not result.get("ok") or result.get("sha256") != expected_hash:
+                        raise RuntimeError(f"file_hash mismatch: {result}")
+
+                    result = _payload(await session.call_tool(
+                        "run_process",
+                        {
+                            "executable": args.python,
+                            "args": ["-c", "print('SMOKE_EXEC_OK')"],
+                            "cwd": str(Path(args.root).resolve()),
+                            "timeout_seconds": 20,
+                        },
+                    ))
+                    if not result.get("ok") or "SMOKE_EXEC_OK" not in result.get("stdout", ""):
+                        raise RuntimeError(f"run_process failed: {result}")
+                finally:
+                    try:
+                        await session.call_tool("delete_file", {"path": str(test_path)})
+                    except Exception:
+                        pass
 
     print("MCP_SMOKE=PASS")
     print("TOOLS_LIST=" + ",".join(sorted(required)))
