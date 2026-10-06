@@ -78,3 +78,38 @@ def test_mcp_surface_exposes_gateway_tools():
     assert "capability_invoke" in names
     assert "capability_discover" in mcp_server._TOOL_REGISTRY
     assert "capability_invoke" in mcp_server._TOOL_REGISTRY
+
+
+def test_discovery_reports_workspace_read_write_capabilities():
+    result = capability_discover()
+    names = {item["name"] for item in result["capabilities"]}
+    assert "workspace.read-text" in names
+    assert "workspace.write-text" in names
+
+
+def test_workspace_write_capability_routes_to_existing_owner(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    captured = {}
+
+    def fake_write(workspace, path, content, config_path, **kwargs):
+        captured.update({
+            "workspace": workspace,
+            "path": path,
+            "content": content,
+            "config_path": config_path,
+            "kwargs": kwargs,
+        })
+        return {"ok": True, "receipt": {"after_sha256": "abc"}}
+
+    monkeypatch.setattr("capability_gateway.workspace_write_text", fake_write)
+    result = capability_invoke(
+        "workspace.write-text",
+        {"workspace": "demo", "path": "src/main.py", "content": "print(1)\n"},
+        config,
+    )
+    assert captured["workspace"] == "demo"
+    assert captured["path"] == "src/main.py"
+    assert captured["content"] == "print(1)\n"
+    assert captured["config_path"] == config
+    assert result["owner"] == "workspace_bridge.workspace_write_text"
+    assert result["result"]["receipt"]["after_sha256"] == "abc"
