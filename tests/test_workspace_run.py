@@ -22,6 +22,9 @@ from workspace_bridge import (
     resolve_workspace,
     run_command,
     run_sequence,
+    workspace_read_text,
+    workspace_write_text,
+    _risk_tier,
 )
 from workspace_identity import revision_status, workspace_identity
 
@@ -419,3 +422,87 @@ def test_run_command_rejects_unknown_npm(tmp_path):
     config = _config(tmp_path)
     with pytest.raises(BridgeError, match="not allowlisted"):
         run_command(RunRequest("demo", ("npm.cmd", "exec", "something")), config)
+
+
+def test_routine_git_commit_does_not_require_workspace_mutate(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    workspace = resolve_workspace(config, "demo")
+    gate = workspace_bridge_gate = __import__("workspace_bridge")._authority_gate(
+        config,
+        workspace,
+        ("git", "commit", "-m", "test"),
+    )
+    assert gate["decision"] == "ALLOW"
+    assert gate["risk_tier"] == "routine"
+    assert gate["capability"] is None
+
+
+def test_elevated_install_requires_workspace_mutate(tmp_path):
+    config = _config(tmp_path)
+    workspace = resolve_workspace(config, "demo")
+    gate_fn = __import__("workspace_bridge")._authority_gate
+    with pytest.raises(BridgeError, match="WORKSPACE_CAPABILITY_REQUIRED"):
+        gate_fn(config, workspace, ("npm.cmd", "install"))
+    allowed = gate_fn(
+        config,
+        workspace,
+        ("npm.cmd", "install"),
+        capability="workspace.mutate",
+        context_evidence={"workspace": "demo"},
+    )
+    assert allowed["decision"] == "ALLOW"
+    assert allowed["risk_tier"] == "elevated"
+
+
+def test_workspace_text_read_write_is_bounded_and_receipted(tmp_path):
+    config = _config(tmp_path)
+    result = workspace_write_text(
+        "demo",
+        "src/example.txt",
+        "hello\n",
+        config,
+        task_id="test-task",
+    )
+    assert result["ok"] is True
+    assert result["changed"] is True
+    assert result["authority"]["risk_tier"] == "routine"
+    assert result["receipt"]["after_sha256"] == result["after_sha256"]
+
+    read = workspace_read_text("demo", "src/example.txt", config)
+    assert read["text"] == "hello\n"
+    assert read["sha256"] == result["after_sha256"]
+    assert read["authority"]["risk_tier"] == "low"
+
+
+def test_workspace_write_rejects_protected_paths(tmp_path):
+    config = _config(tmp_path)
+    with pytest.raises(BridgeError, match="WORKSPACE_PROTECTED_PATH"):
+        workspace_write_text("demo", ".governance/task-scope.json", "{}", config)
+
+
+def test_workspace_write_expected_hash_prevents_lost_update(tmp_path):
+    config = _config(tmp_path)
+    first = workspace_write_text("demo", "main.py", "print(2)\n", config)
+    with pytest.raises(BridgeError, match="WORKSPACE_FILE_CONFLICT"):
+        workspace_write_text(
+            "demo",
+            "main.py",
+            "print(3)\n",
+            config,
+            expected_sha256="0" * 64,
+        )
+    second = workspace_write_text(
+        "demo",
+        "main.py",
+        "print(3)\n",
+        config,
+        expected_sha256=first["after_sha256"],
+    )
+    assert second["changed"] is True
+
+
+def test_risk_tier_classification():
+    assert _risk_tier(("git", "status", "--short")) == "low"
+    assert _risk_tier(("git", "add", "main.py")) == "routine"
+    assert _risk_tier(("git", "commit", "-m", "x")) == "routine"
+    assert _risk_tier(("npm.cmd", "install")) == "elevated"
