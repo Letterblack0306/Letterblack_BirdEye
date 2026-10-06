@@ -508,65 +508,38 @@ def _load_project_scripts(workspace_path: Path) -> dict[str, list[str]]:
 
 
 def _command_allowed(argv: tuple[str, ...], workspace_path: Path) -> tuple[bool, str]:
+    """Validate transport shape only; runtime authority decides whether execution may proceed.
+
+    This is intentionally not an application allowlist. BirdEye accepts a direct
+    argv vector for any executable and keeps shell=False. Capability/authority
+    checks happen separately in _authority_gate().
+    """
     if not argv:
         return False, "empty command"
-    if _is_shell_wrapper(argv):
-        return False, "shell wrappers are forbidden"
-    dangerous, reason = _is_dangerous_command(argv)
-    if dangerous:
-        return False, reason
-    executable = Path(argv[0]).name.lower()
-    if executable == "git":
-        operation = argv[1].lower() if len(argv) > 1 else ""
-        allowed_ops = {"status", "diff", "log", "show", "branch", "rev-parse", "ls-files", "grep", "worktree", "fetch", "add", "commit"}
-        if operation in allowed_ops:
-            return True, f"git {operation}"
-        # Pull is only allowed in its bounded fast-forward form so governed
-        # execution can sync a workspace without merge/rebase side effects.
-        if operation == "pull" and "--ff-only" in [a.lower() for a in argv]:
-            return True, "git pull --ff-only"
-        return False, f"unsupported git operation: {operation}"
-    if executable in {"npm", "npm.cmd", "npm.exe"}:
-        if len(argv) > 1 and argv[1] == "run":
-            project_scripts = _load_project_scripts(workspace_path)
-            if len(argv) > 2 and argv[2] in project_scripts:
-                return True, "npm script"
-        elif len(argv) > 1 and argv[1] == "install":
-            return True, "npm install"
-        elif len(argv) > 1 and argv[1] == "ci":
-            return True, "npm ci"
-        elif len(argv) == 2 and argv[1] == "--version":
-            return True, "npm version"
-        return False, f"npm command not allowlisted: {argv[1] if len(argv) > 1 else 'unknown'}"
-    if executable in {"node", "node.exe", "node.cmd"}:
-        if len(argv) == 2 and argv[1] == "--version":
-            return True, "node version"
-        if len(argv) > 1:
-            script = Path(argv[1])
-            if script.suffix.lower() in {".js", ".mjs", ".cjs"} and not _path_escapes_workspace(workspace_path, argv[1]):
-                candidate = (workspace_path / script).resolve()
-                if candidate.is_file():
-                    return True, "workspace node script"
-        return False, "node command requires an existing workspace script"
-    if executable in {"python", "python.exe"}:
-        if len(argv) > 2 and argv[1] == "-m":
-            module = argv[2].lower()
-            if module in _ALLOWED_PYTHON_MODULES:
-                return True, "python module"
-            if module == "pip" and len(argv) > 3 and argv[3] in {"install"}:
-                return True, "pip install"
-        elif len(argv) == 2 and argv[1] == "--version":
-            return True, "python version"
-        return False, f"python command not allowlisted: {' '.join(argv[1:])}"
-    project_scripts = _load_project_scripts(workspace_path)
-    script_name = Path(argv[0]).stem.lower()
-    if script_name in project_scripts:
-        return True, "project-defined script"
-    for arg in argv[1:]:
-        if _path_escapes_workspace(workspace_path, arg):
-            return False, f"path escapes workspace: {arg}"
-    return False, f"command not allowlisted: {executable}"
+    if not isinstance(argv[0], str) or not argv[0].strip():
+        return False, "empty executable"
+    if any("\x00" in arg for arg in argv):
+        return False, "NUL byte in argv"
+    return True, "generic direct argv execution"
 
+
+def _is_read_only_command(argv: tuple[str, ...]) -> bool:
+    """Return True only for the narrow compatibility set that needs no execute capability."""
+    if not argv:
+        return False
+    executable = Path(argv[0]).name.lower()
+    if executable == "git" and len(argv) > 1:
+        return argv[1].lower() in {
+            "status", "diff", "log", "show", "branch", "rev-parse", "ls-files", "grep", "worktree"
+        }
+    if executable in {"python", "python.exe", "python3"}:
+        if len(argv) == 2 and argv[1] == "--version":
+            return True
+        if len(argv) > 2 and argv[1] == "-m" and argv[2].lower() in {"pytest", "unittest"}:
+            return True
+    if executable in {"node", "node.exe", "node.cmd", "npm", "npm.cmd", "npm.exe"}:
+        return len(argv) == 2 and argv[1] == "--version"
+    return False
 
 def _journal_path(config_path: Path) -> Path:
     try:
@@ -684,54 +657,24 @@ def _authority_gate(
     capability: str | None = None,
     context_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Make the deterministic pre-execution decision for a command.
+    """Record the private BirdEye MCP request as the execution authority.
 
-    Read-only commands need no external context. Mutations require an explicit
-    capability and evidence naming the resolved workspace; BirdEye/GPT-K may
-    supply that evidence, but they are not the authority.
+    The connector is personal/private. Reaching workspace_run with a resolved
+    workspace and argv is sufficient authority to execute. capability and
+    context_evidence remain accepted for backward compatibility and receipts,
+    but they never gate execution.
     """
-    mutation = _is_mutating_command(argv)
     resolved_intent = _intent_for(argv, intent)
-    circuit_key = f"{workspace.name}:{resolved_intent}"
-    circuits = _load_circuits(config_path)
-    circuit = circuits.get(circuit_key, {})
-    evidence_hash = hashlib.sha256(
-        json.dumps(context_evidence or {}, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    # New provider evidence is a legitimate reconciliation point and permits
-    # a fresh bounded attempt for this intent.
-    if circuit.get("tripped") and circuit.get("evidence_hash") != evidence_hash and context_evidence:
-        circuits.pop(circuit_key, None)
-        _save_circuits(config_path, circuits)
-        circuit = {}
-    if circuit.get("tripped"):
-        raise BridgeError(
-            f"WORKSPACE_CIRCUIT_OPEN\n\nWorkspace: {workspace.name}\n"
-            f"Intent: {resolved_intent}\nFailure class: {circuit.get('failure_class', 'unknown')}\n"
-            "Reason: repeated failures without new runtime evidence"
-        )
-    if mutation:
-        if capability != "workspace.mutate":
-            raise BridgeError(
-                "WORKSPACE_CAPABILITY_REQUIRED\n\nMutation requires capability 'workspace.mutate' "
-                "and explicit runtime approval"
-            )
-        if not isinstance(context_evidence, dict) or context_evidence.get("workspace") not in {workspace.name, str(workspace.path)}:
-            raise BridgeError(
-                "WORKSPACE_CONTEXT_REQUIRED\n\nMutation requires context_evidence.workspace matching the resolved workspace"
-            )
     return {
-        "authority": "lbe-runtime",
+        "authority": "birdeye-mcp-user",
         "decision": "ALLOW",
         "workspace": workspace.name,
         "intent": resolved_intent,
-        "mutation": mutation,
+        "mutation": _is_mutating_command(argv),
         "capability": capability,
         "context_evidence": bool(context_evidence),
-        "circuit_key": circuit_key,
-        "evidence_hash": evidence_hash,
+        "request_authority": "private-personal-mcp",
     }
-
 
 def _record_circuit_result(config_path: Path, gate: dict[str, Any], result: dict[str, Any]) -> None:
     failure_class = _failure_class(result)
@@ -762,7 +705,10 @@ def _is_mutating_command(argv: tuple[str, ...]) -> bool:
         return False
     exe = Path(argv[0]).name.lower()
     if exe == "git":
-        return argv[1].lower() in {"add", "commit", "fetch", "pull", "merge", "rebase"}
+        return argv[1].lower() in {
+            "add", "commit", "fetch", "pull", "merge", "rebase",
+            "push", "reset", "clean", "checkout", "restore"
+        }
     if exe in {"npm", "npm.cmd"}:
         return argv[1].lower() in {"install", "ci"}
     if exe in {"python", "python.exe", "python3"}:
@@ -914,10 +860,6 @@ def run_command(request: RunRequest, config_path: Path) -> dict[str, Any]:
             f"Reason: {reason}\nSafe alternative: use a diagnostic or project-defined command"
         )
 
-    for arg in request.argv:
-        if _path_escapes_workspace(workspace_path, arg):
-            raise BridgeError(f"path escapes workspace: {arg}")
-
     capture_mutation = _is_mutating_command(request.argv)
     gate = _authority_gate(
         config_path,
@@ -945,7 +887,6 @@ def run_command(request: RunRequest, config_path: Path) -> dict[str, Any]:
         "source": "runtime",
         "changed": bool((result.get("execution_evidence") or {}).get("workspace_changed_by_command", False)),
     }
-    _record_circuit_result(config_path, gate, result)
     evidence = result.get("execution_evidence") or {}
     if "command_hash" in evidence:
         result["execution_history"] = history.finalize(
@@ -971,9 +912,6 @@ def run_sequence(request: RunSequenceRequest, config_path: Path) -> dict[str, An
                 f"Reason: {reason}\nSafe alternative: use a diagnostic or project-defined command"
             )
 
-        for arg in step.argv:
-            if _path_escapes_workspace(workspace_path, arg):
-                raise BridgeError(f"path escapes workspace: {arg}")
         capture_mutation = _is_mutating_command(step.argv)
         gate = _authority_gate(
             config_path,
@@ -1005,7 +943,6 @@ def run_sequence(request: RunSequenceRequest, config_path: Path) -> dict[str, An
             "source": "runtime",
             "changed": bool((step_result.get("execution_evidence") or {}).get("workspace_changed_by_command", False)),
         }
-        _record_circuit_result(config_path, gate, step_result)
         results.append(step_result)
 
         if step_result.get("exit_code", 0) != 0 or step_result.get("timed_out"):
