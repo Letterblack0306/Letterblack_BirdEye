@@ -657,66 +657,24 @@ def _authority_gate(
     capability: str | None = None,
     context_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Make the deterministic pre-execution decision for a command.
+    """Record the private BirdEye MCP request as the execution authority.
 
-    Read-only commands need no external context. Mutations require an explicit
-    capability and evidence naming the resolved workspace; BirdEye/GPT-K may
-    supply that evidence, but they are not the authority.
+    The connector is personal/private. Reaching workspace_run with a resolved
+    workspace and argv is sufficient authority to execute. capability and
+    context_evidence remain accepted for backward compatibility and receipts,
+    but they never gate execution.
     """
-    mutation = _is_mutating_command(argv)
     resolved_intent = _intent_for(argv, intent)
-    circuit_key = f"{workspace.name}:{resolved_intent}"
-    circuits = _load_circuits(config_path)
-    circuit = circuits.get(circuit_key, {})
-    evidence_hash = hashlib.sha256(
-        json.dumps(context_evidence or {}, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    # New provider evidence is a legitimate reconciliation point and permits
-    # a fresh bounded attempt for this intent.
-    if circuit.get("tripped") and circuit.get("evidence_hash") != evidence_hash and context_evidence:
-        circuits.pop(circuit_key, None)
-        _save_circuits(config_path, circuits)
-        circuit = {}
-    if circuit.get("tripped"):
-        raise BridgeError(
-            f"WORKSPACE_CIRCUIT_OPEN\n\nWorkspace: {workspace.name}\n"
-            f"Intent: {resolved_intent}\nFailure class: {circuit.get('failure_class', 'unknown')}\n"
-            "Reason: repeated failures without new runtime evidence"
-        )
-    if mutation:
-        if capability != "workspace.mutate":
-            raise BridgeError(
-                "WORKSPACE_CAPABILITY_REQUIRED\n\nMutation requires capability 'workspace.mutate' "
-                "and explicit runtime approval"
-            )
-        if not isinstance(context_evidence, dict) or context_evidence.get("workspace") not in {workspace.name, str(workspace.path)}:
-            raise BridgeError(
-                "WORKSPACE_CONTEXT_REQUIRED\n\nMutation requires context_evidence.workspace matching the resolved workspace"
-            )
-    elif not _is_read_only_command(argv):
-        if capability != "workspace.execute":
-            raise BridgeError(
-                "WORKSPACE_EXECUTE_CAPABILITY_REQUIRED\n\nGeneric execution requires capability "
-                "'workspace.execute'. BirdEye accepts the argv vector, but execution authority "
-                "must be explicit."
-            )
-        if not isinstance(context_evidence, dict) or context_evidence.get("workspace") not in {workspace.name, str(workspace.path)}:
-            raise BridgeError(
-                "WORKSPACE_CONTEXT_REQUIRED\n\nGeneric execution requires "
-                "context_evidence.workspace matching the resolved workspace"
-            )
     return {
-        "authority": "lbe-runtime",
+        "authority": "birdeye-mcp-user",
         "decision": "ALLOW",
         "workspace": workspace.name,
         "intent": resolved_intent,
-        "mutation": mutation,
+        "mutation": _is_mutating_command(argv),
         "capability": capability,
         "context_evidence": bool(context_evidence),
-        "circuit_key": circuit_key,
-        "evidence_hash": evidence_hash,
+        "request_authority": "private-personal-mcp",
     }
-
 
 def _record_circuit_result(config_path: Path, gate: dict[str, Any], result: dict[str, Any]) -> None:
     failure_class = _failure_class(result)
@@ -902,12 +860,6 @@ def run_command(request: RunRequest, config_path: Path) -> dict[str, Any]:
             f"Reason: {reason}\nSafe alternative: use a diagnostic or project-defined command"
         )
 
-    for index, arg in enumerate(request.argv):
-        if index == 0:
-            continue
-        if _path_escapes_workspace(workspace_path, arg):
-            raise BridgeError(f"path escapes workspace: {arg}")
-
     capture_mutation = _is_mutating_command(request.argv)
     gate = _authority_gate(
         config_path,
@@ -935,7 +887,6 @@ def run_command(request: RunRequest, config_path: Path) -> dict[str, Any]:
         "source": "runtime",
         "changed": bool((result.get("execution_evidence") or {}).get("workspace_changed_by_command", False)),
     }
-    _record_circuit_result(config_path, gate, result)
     evidence = result.get("execution_evidence") or {}
     if "command_hash" in evidence:
         result["execution_history"] = history.finalize(
@@ -961,11 +912,6 @@ def run_sequence(request: RunSequenceRequest, config_path: Path) -> dict[str, An
                 f"Reason: {reason}\nSafe alternative: use a diagnostic or project-defined command"
             )
 
-        for index, arg in enumerate(step.argv):
-            if index == 0:
-                continue
-            if _path_escapes_workspace(workspace_path, arg):
-                raise BridgeError(f"path escapes workspace: {arg}")
         capture_mutation = _is_mutating_command(step.argv)
         gate = _authority_gate(
             config_path,
@@ -997,7 +943,6 @@ def run_sequence(request: RunSequenceRequest, config_path: Path) -> dict[str, An
             "source": "runtime",
             "changed": bool((step_result.get("execution_evidence") or {}).get("workspace_changed_by_command", False)),
         }
-        _record_circuit_result(config_path, gate, step_result)
         results.append(step_result)
 
         if step_result.get("exit_code", 0) != 0 or step_result.get("timed_out"):
