@@ -287,6 +287,7 @@ _DANGEROUS_EXECUTABLES = frozenset({"reg", "diskpart", "bcdedit", "format", "shu
 _DESTRUCTIVE_GIT_OPERATIONS = frozenset({"reset", "clean", "checkout", "restore", "push"})
 _DESTRUCTIVE_GIT_FLAGS = frozenset({"--hard", "-fd", "-fdx", "--force", "-f", "--source"})
 _SECRET_GLOBS = ("**/.env", "**/.env.*", "**/credentials*", "**/secrets*", "**/*.p12", "**/*.pfx", "**/*.key", "**/*.pem")
+PROTECTED_WORKSPACE_PREFIXES = (".git/", ".governance/", ".lbe/", "operator-kit/")
 _READ_DIAGNOSTIC_PREFIXES = {
     ("git",): {"status", "diff", "log", "show", "branch", "rev-parse", "ls-files", "grep", "worktree", "fetch"},
     ("python",): {"--version"},
@@ -675,6 +676,23 @@ def _save_circuits(config_path: Path, circuits: dict[str, dict[str, Any]]) -> No
         pass
 
 
+def _risk_tier(argv: tuple[str, ...]) -> str:
+    """Classify execution risk without turning routine workspace work into approval churn."""
+    if not _is_mutating_command(argv):
+        return "low"
+    executable = Path(argv[0]).name.lower() if argv else ""
+    operation = argv[1].lower() if len(argv) > 1 else ""
+    if executable == "git" and operation in {"add", "commit"}:
+        return "routine"
+    if executable == "git" and operation in {"fetch", "pull", "merge", "rebase"}:
+        return "elevated"
+    if executable in {"npm", "npm.cmd", "npm.exe"} and operation in {"install", "ci"}:
+        return "elevated"
+    if executable in {"python", "python.exe", "python3"} and tuple(argv[1:3]) == ("-m", "pip"):
+        return "elevated"
+    return "elevated"
+
+
 def _authority_gate(
     config_path: Path,
     workspace: Workspace,
@@ -686,11 +704,13 @@ def _authority_gate(
 ) -> dict[str, Any]:
     """Make the deterministic pre-execution decision for a command.
 
-    Read-only commands need no external context. Mutations require an explicit
-    capability and evidence naming the resolved workspace; BirdEye/GPT-K may
-    supply that evidence, but they are not the authority.
+    Low-risk reads and routine, reversible workspace-local mutations execute
+    without user approval. Elevated mutations still require the existing
+    workspace.mutate capability plus matching runtime context. Hard-blocked
+    commands and workspace escapes are rejected before this gate.
     """
     mutation = _is_mutating_command(argv)
+    risk_tier = _risk_tier(argv)
     resolved_intent = _intent_for(argv, intent)
     circuit_key = f"{workspace.name}:{resolved_intent}"
     circuits = _load_circuits(config_path)
@@ -710,15 +730,14 @@ def _authority_gate(
             f"Intent: {resolved_intent}\nFailure class: {circuit.get('failure_class', 'unknown')}\n"
             "Reason: repeated failures without new runtime evidence"
         )
-    if mutation:
+    if risk_tier == "elevated":
         if capability != "workspace.mutate":
             raise BridgeError(
-                "WORKSPACE_CAPABILITY_REQUIRED\n\nMutation requires capability 'workspace.mutate' "
-                "and explicit runtime approval"
+                "WORKSPACE_CAPABILITY_REQUIRED\n\nElevated mutation requires capability 'workspace.mutate'"
             )
         if not isinstance(context_evidence, dict) or context_evidence.get("workspace") not in {workspace.name, str(workspace.path)}:
             raise BridgeError(
-                "WORKSPACE_CONTEXT_REQUIRED\n\nMutation requires context_evidence.workspace matching the resolved workspace"
+                "WORKSPACE_CONTEXT_REQUIRED\n\nElevated mutation requires context_evidence.workspace matching the resolved workspace"
             )
     return {
         "authority": "lbe-runtime",
@@ -726,6 +745,7 @@ def _authority_gate(
         "workspace": workspace.name,
         "intent": resolved_intent,
         "mutation": mutation,
+        "risk_tier": risk_tier,
         "capability": capability,
         "context_evidence": bool(context_evidence),
         "circuit_key": circuit_key,
@@ -766,7 +786,7 @@ def _is_mutating_command(argv: tuple[str, ...]) -> bool:
     if exe in {"npm", "npm.cmd"}:
         return argv[1].lower() in {"install", "ci"}
     if exe in {"python", "python.exe", "python3"}:
-        if argv[1:3] == ["-m", "pip"]:
+        if tuple(argv[1:3]) == ("-m", "pip"):
             return any(a == "install" for a in argv[3:])
     return False
 
@@ -1035,6 +1055,147 @@ def run_sequence(request: RunSequenceRequest, config_path: Path) -> dict[str, An
                 Path(__file__).resolve().parent / "state", last_evidence
             )
     return response
+
+
+def _workspace_file_target(workspace: Workspace, relative_path: str) -> tuple[Path, str]:
+    normalized = _required_text(relative_path, "path").replace("\\", "/").lstrip("./")
+    _validate_relative_target(normalized)
+    target = (workspace.path.resolve() / normalized).resolve()
+    try:
+        target.relative_to(workspace.path.resolve())
+    except ValueError as exc:
+        raise BridgeError(f"path escapes workspace: {relative_path}") from exc
+    return target, normalized
+
+
+def _protected_workspace_path(normalized: str) -> bool:
+    lowered = normalized.lower().strip("/")
+    return any(
+        lowered == prefix.rstrip("/") or lowered.startswith(prefix)
+        for prefix in PROTECTED_WORKSPACE_PREFIXES
+    )
+
+
+def _secret_workspace_path(normalized: str) -> bool:
+    base = Path(normalized).name.lower()
+    if base == ".env" or base.endswith(".env"):
+        return True
+    return any(fnmatch.fnmatch(base, pattern.replace("**/", "").lower()) for pattern in SECRET_GLOBS)
+
+
+def workspace_read_text(
+    workspace_name: str,
+    relative_path: str,
+    config_path: Path,
+    *,
+    max_chars: int = 200_000,
+) -> dict[str, Any]:
+    if max_chars < 1 or max_chars > 1_000_000:
+        raise BridgeError("max_chars must be between 1 and 1000000")
+    workspace = resolve_workspace(config_path, workspace_name)
+    target, normalized = _workspace_file_target(workspace, relative_path)
+    if _secret_workspace_path(normalized):
+        raise BridgeError(f"WORKSPACE_SECRET_PATH\n\nRead denied for secret-like path: {normalized}")
+    if not target.is_file():
+        raise BridgeError(f"WORKSPACE_FILE_NOT_FOUND\n\nFile does not exist: {normalized}")
+    raw = target.read_bytes()
+    text = raw.decode("utf-8", errors="replace")
+    truncated = len(text) > max_chars
+    return {
+        "ok": True,
+        "workspace": workspace.name,
+        "path": normalized,
+        "text": text[:max_chars],
+        "truncated": truncated,
+        "size_bytes": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "authority": {
+            "authority": "lbe-runtime",
+            "decision": "ALLOW",
+            "risk_tier": "low",
+            "mutation": False,
+        },
+    }
+
+
+def workspace_write_text(
+    workspace_name: str,
+    relative_path: str,
+    content: str,
+    config_path: Path,
+    *,
+    expected_sha256: str | None = None,
+    task_id: str | None = None,
+) -> dict[str, Any]:
+    if not isinstance(content, str):
+        raise BridgeError("content must be a string")
+    workspace = resolve_workspace(config_path, workspace_name)
+    target, normalized = _workspace_file_target(workspace, relative_path)
+    if _protected_workspace_path(normalized):
+        raise BridgeError(f"WORKSPACE_PROTECTED_PATH\n\nDirect write denied for protected path: {normalized}")
+    if _secret_workspace_path(normalized):
+        raise BridgeError(f"WORKSPACE_SECRET_PATH\n\nDirect write denied for secret-like path: {normalized}")
+    if target.exists() and not target.is_file():
+        raise BridgeError(f"WORKSPACE_FILE_REQUIRED\n\nTarget is not a file: {normalized}")
+
+    before = target.read_bytes() if target.exists() else b""
+    before_sha = hashlib.sha256(before).hexdigest() if target.exists() else None
+    if expected_sha256 is not None and before_sha != expected_sha256.lower():
+        raise BridgeError(
+            "WORKSPACE_FILE_CONFLICT\n\n"
+            f"Expected sha256 {expected_sha256.lower()} but observed {before_sha or 'missing'} for {normalized}"
+        )
+
+    encoded = content.encode("utf-8")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.birdeye-{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_bytes(encoded)
+        temporary.replace(target)
+    finally:
+        if temporary.exists():
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+
+    after_sha = hashlib.sha256(encoded).hexdigest()
+    changed = before != encoded
+    _append_journal(
+        config_path,
+        workspace=workspace.name,
+        task_id=task_id,
+        argv=("workspace_write_text", normalized),
+        exit_code=0,
+        duration=0.0,
+        head_before=None,
+        head_after=None,
+        classification="success",
+    )
+    return {
+        "ok": True,
+        "workspace": workspace.name,
+        "path": normalized,
+        "changed": changed,
+        "size_bytes": len(encoded),
+        "before_sha256": before_sha,
+        "after_sha256": after_sha,
+        "authority": {
+            "authority": "lbe-runtime",
+            "decision": "ALLOW",
+            "risk_tier": "routine",
+            "mutation": True,
+            "reason": "workspace-local text write",
+        },
+        "receipt": {
+            "operation": "workspace.write-text",
+            "workspace": workspace.name,
+            "path": normalized,
+            "before_sha256": before_sha,
+            "after_sha256": after_sha,
+            "changed": changed,
+        },
+    }
 
 
 def command_history(config_path: Path, *, limit: int = 50, workspace: str | None = None) -> dict[str, Any]:
