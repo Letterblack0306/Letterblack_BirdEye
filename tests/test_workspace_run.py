@@ -131,6 +131,7 @@ def test_npm_install_is_mutating():
     assert _is_mutating_command(("npm.cmd", "install")) is True
     assert _is_mutating_command(("npm.cmd", "ci")) is True
     assert _is_mutating_command(("npm.cmd", "test")) is False
+    assert _is_mutating_command(("python", "-m", "pip", "install", "pytest")) is True
 
 
 def test_powershell_wrapper_is_blocked():
@@ -319,6 +320,8 @@ def test_mcp_tools_list_exposes_only_allowed_tools():
     assert "workspace_command_history" in names
     assert "workspace_identity" in names
     assert "revision_status" in names
+    assert "workspace_read_text" in names
+    assert "workspace_write_text" in names
     for forbidden in ("terminal", "shell", "powershell", "exec", "run_anything"):
         assert forbidden not in names
 
