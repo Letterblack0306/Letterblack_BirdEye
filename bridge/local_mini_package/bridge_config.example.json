@@ -1,0 +1,46 @@
+{
+  "listen_host": "127.0.0.1",
+  "listen_port": 8765,
+  "python": "C:\\Users\\prave\\AppData\\Local\\Programs\\Python\\Python310\\python.exe",
+  "server": "C:\\MCP Local\\Local_Mini_MCP\\v2\\mini_local_mcp_v2.py",
+  "expected_server_sha256": "SET_BY_INSTALLER",
+  "read_roots": ["C:\\", "D:\\", "E:\\", "I:\\"],
+  "write_roots": [
+    "C:\\MCP Local",
+    "D:\\2026",
+    "D:\\Developments",
+    "I:\\Other computers\\My Computer\\GPT_Local"
+  ],
+  "exec_allow": [
+    "git.exe",
+    "python.exe",
+    "python3.exe",
+    "node.exe",
+    "npm.cmd",
+    "npx.cmd",
+    "powershell.exe",
+    "pwsh.exe",
+    "blender.exe"
+  ],
+  "remote_tools": [
+    "health",
+    "system_info",
+    "list_drives",
+    "list_dir",
+    "stat_path",
+    "hash_file",
+    "read_text",
+    "read_lines",
+    "find_files",
+    "search_text",
+    "write_text",
+    "patch_text",
+    "run_process",
+    "process_start",
+    "process_status",
+    "process_output",
+    "process_stop"
+  ],
+  "write_enabled": false,
+  "exec_enabled": false
+}
