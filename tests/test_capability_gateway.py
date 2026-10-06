@@ -68,3 +68,13 @@ def test_workspace_command_routes_to_existing_owner(tmp_path, monkeypatch):
     assert result["authority"] == "birdeye-capability-gateway"
     assert result["owner"] == "workspace_bridge.run_command"
     assert result["result"]["receipt"]["execution_evidence_sha256"] == "abc"
+
+
+def test_mcp_surface_exposes_gateway_tools():
+    import mcp_server
+
+    names = {item["name"] for item in mcp_server._TOOL_DEFINITIONS}
+    assert "capability_discover" in names
+    assert "capability_invoke" in names
+    assert "capability_discover" in mcp_server._TOOL_REGISTRY
+    assert "capability_invoke" in mcp_server._TOOL_REGISTRY
