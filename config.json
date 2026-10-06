@@ -1,5 +1,19 @@
 {
   "schema_version": 2,
+  "execution_policy": "unrestricted",
+  "allow_global_execution": true,
+  "extra_allowed_executables": [
+    "powershell",
+    "powershell.exe",
+    "pwsh",
+    "pwsh.exe",
+    "cmd",
+    "cmd.exe",
+    "where",
+    "where.exe",
+    "realityscan",
+    "realityscan.exe"
+  ],
   "indexes": {
     "shared_vector": {
       "path": "C:\\MCP Local\\Letterblack_BirdEye\\state\\vectors\\semantic.db",
@@ -577,6 +591,22 @@
       "index": true,
       "hash": "sha256",
       "git": true,
+      "exclusions": [
+        ".git",
+        "node_modules",
+        "dist",
+        "build",
+        "coverage"
+      ]
+    },
+    {
+      "id": "sam-ginie",
+      "path": "D:\\2026\\SAM_GINIE",
+      "class": "workspace",
+      "enabled": true,
+      "index": true,
+      "hash": "sha256",
+      "git": false,
       "exclusions": [
         ".git",
         "node_modules",

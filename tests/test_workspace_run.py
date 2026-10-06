@@ -419,3 +419,19 @@ def test_run_command_rejects_unknown_npm(tmp_path):
     config = _config(tmp_path)
     with pytest.raises(BridgeError, match="not allowlisted"):
         run_command(RunRequest("demo", ("npm.cmd", "exec", "something")), config)
+
+
+def test_global_execution_policy_allowed(tmp_path):
+    config = _config(tmp_path)
+    cfg_data = json.loads(config.read_text(encoding="utf-8"))
+    cfg_data["execution_policy"] = "unrestricted"
+    config.write_text(json.dumps(cfg_data), encoding="utf-8")
+
+    allowed, reason = _command_allowed(("powershell.exe", "-Command", "Get-Location"), tmp_path / "workspace", config_path=config)
+    assert allowed is True
+    assert reason == "global execution policy"
+
+    allowed_rs, reason_rs = _command_allowed(("realityscan.exe", "--help"), tmp_path / "workspace", config_path=config)
+    assert allowed_rs is True
+    assert reason_rs == "global execution policy"
+

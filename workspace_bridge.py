@@ -507,15 +507,60 @@ def _load_project_scripts(workspace_path: Path) -> dict[str, list[str]]:
     return scripts
 
 
-def _command_allowed(argv: tuple[str, ...], workspace_path: Path) -> tuple[bool, str]:
+def _load_execution_policy(config_path: Path | None) -> dict[str, Any]:
+    if not config_path:
+        return {}
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        policy = config.get("execution_policy")
+        allow_global = False
+        extra_allowed = set()
+
+        if isinstance(policy, str):
+            if policy.lower() in {"unrestricted", "global", "unbounded", "allow_all"}:
+                allow_global = True
+        elif isinstance(policy, dict):
+            if policy.get("mode", "").lower() in {"unrestricted", "global", "unbounded", "allow_all"}:
+                allow_global = True
+            raw_extra = policy.get("extra_allowed_executables", [])
+            if isinstance(raw_extra, list):
+                extra_allowed = {str(x).lower() for x in raw_extra}
+
+        if config.get("allow_global_execution") is True:
+            allow_global = True
+
+        raw_extra_top = config.get("extra_allowed_executables", [])
+        if isinstance(raw_extra_top, list):
+            extra_allowed.update(str(x).lower() for x in raw_extra_top)
+
+        return {
+            "allow_global": allow_global,
+            "extra_allowed": extra_allowed,
+        }
+    except Exception:
+        return {}
+
+
+def _command_allowed(argv: tuple[str, ...], workspace_path: Path, config_path: Path | None = None) -> tuple[bool, str]:
     if not argv:
         return False, "empty command"
-    if _is_shell_wrapper(argv):
-        return False, "shell wrappers are forbidden"
     dangerous, reason = _is_dangerous_command(argv)
     if dangerous:
         return False, reason
     executable = Path(argv[0]).name.lower()
+
+    policy_info = _load_execution_policy(config_path)
+    allow_global = policy_info.get("allow_global", False)
+    extra_allowed = policy_info.get("extra_allowed", set())
+
+    if allow_global or "*" in extra_allowed:
+        return True, "global execution policy"
+
+    if executable in extra_allowed or f"{executable}.exe" in extra_allowed:
+        return True, f"allowlisted executable: {executable}"
+
+    if _is_shell_wrapper(argv):
+        return False, "shell wrappers are forbidden"
     if executable == "git":
         operation = argv[1].lower() if len(argv) > 1 else ""
         allowed_ops = {"status", "diff", "log", "show", "branch", "rev-parse", "ls-files", "grep", "worktree", "fetch", "add", "commit"}
@@ -906,7 +951,7 @@ def run_command(request: RunRequest, config_path: Path) -> dict[str, Any]:
     workspace = resolve_workspace(config_path, request.workspace)
     workspace_path = workspace.path.resolve()
 
-    allowed, reason = _command_allowed(request.argv, workspace_path)
+    allowed, reason = _command_allowed(request.argv, workspace_path, config_path=config_path)
     if not allowed:
         raise BridgeError(
             f"WORKSPACE_COMMAND_BLOCKED\n\nWorkspace: {request.workspace}\n"
@@ -963,7 +1008,7 @@ def run_sequence(request: RunSequenceRequest, config_path: Path) -> dict[str, An
     history: Any = None
 
     for index, step in enumerate(request.commands, start=1):
-        allowed, reason = _command_allowed(step.argv, workspace_path)
+        allowed, reason = _command_allowed(step.argv, workspace_path, config_path=config_path)
         if not allowed:
             raise BridgeError(
                 f"WORKSPACE_COMMAND_BLOCKED\n\nWorkspace: {request.workspace}\n"
