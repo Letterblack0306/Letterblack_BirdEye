@@ -1,0 +1,23 @@
+{
+    "schema_version": 1,
+    "workspaces": [
+        {
+            "id": "agents-memory-tool-v6-integration",
+            "name": "lbe-workspace",
+            "root": "C:\\Agents-Memory-Tool-v6-integration",
+            "intent_ledger": "docs\\governance\\PROJECT_INTENT_LEDGER.md",
+            "gate_file": ".lbe\\governance\\implementation-gates.json",
+            "enabled": true,
+            "note": "LBE governed workspace. Intent lifecycle authority lives in the repo ledger; this record only points the controller at it."
+        },
+        {
+            "id": "effect-proof-disposable",
+            "name": "effect-proof-disposable",
+            "root": "C:\\MCP Local\\state\\effect-proof\\ws",
+            "intent_ledger": "docs\\governance\\LEDGER.md",
+            "gate_file": ".lbe\\governance\\gate.json",
+            "enabled": true,
+            "note": "Disposable workspace for effect-authority proof."
+        }
+    ]
+}

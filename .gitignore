@@ -24,3 +24,14 @@ config.json
 
 # Local-only private bridge config (machine-specific credentials)
 bridge/bridge.config.json
+
+
+# LBE authority control plane (public source only)
+# Local credential: live operator token, must never enter Git history.
+authority/control-plane.json
+# Runtime session state and evidence are machine-local.
+authority/sessions/
+authority/workspaces/
+authority/*.log
+authority/*.log.err
+authority/__pycache__/

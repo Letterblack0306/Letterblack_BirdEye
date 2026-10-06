@@ -1,0 +1,26 @@
+{
+    "schema_version": 1,
+    "clients": [
+        {
+            "id": "opencode",
+            "image": "opencode.exe",
+            "actor": "opencode-session"
+        },
+        {
+            "id": "cline",
+            "image": "cline.exe",
+            "actor": "cline-session"
+        },
+        {
+            "id": "codex",
+            "image": "codex.exe",
+            "actor": "codex-session"
+        },
+        {
+            "id": "python",
+            "image": "python.exe",
+            "actor": "python-host"
+        }
+    ],
+    "note": "Server-side image -> logical actor mapping. Actor is derived from the process image, never asserted by the caller. Unregistered images resolve to actor=unregistered:<image> and are denied by the controller."
+}
