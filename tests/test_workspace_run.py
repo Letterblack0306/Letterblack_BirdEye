@@ -151,10 +151,18 @@ def test_dangerous_executable_is_not_transport_hardcoded():
     assert "dangerous executable" in dangerous_reason
 
 
-def test_run_command_path_escape_rejected(tmp_path):
+def test_run_command_allows_absolute_argument_paths(tmp_path, monkeypatch):
     config = _config(tmp_path)
-    with pytest.raises(BridgeError, match="path escapes workspace"):
-        run_command(RunRequest("demo", ("git", "status", "C:\\\\outside")), config)
+    captured = {}
+
+    def fake_run(args, *, cwd, shell, **kwargs):
+        captured["args"] = args
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr("workspace_bridge.subprocess.run", fake_run)
+    result = run_command(RunRequest("demo", ("StarDesk.exe", r"C:\\outside\\file.txt")), config)
+    assert result["ok"] is True
+    assert captured["args"] == ["StarDesk.exe", r"C:\\outside\\file.txt"]
 
 
 def test_path_escape_detector():
@@ -379,13 +387,7 @@ def test_generic_executables_are_transport_allowed():
         assert "generic" in reason.lower()
 
 
-def test_generic_execution_requires_execute_capability(tmp_path):
-    config = _config(tmp_path)
-    with pytest.raises(BridgeError, match="workspace.execute"):
-        run_command(RunRequest("demo", ("StarDesk.exe",)), config)
-
-
-def test_generic_execution_runs_with_execute_capability(tmp_path, monkeypatch):
+def test_generic_execution_runs_without_secondary_capability_gate(tmp_path, monkeypatch):
     config = _config(tmp_path)
     captured = {}
 
@@ -396,22 +398,15 @@ def test_generic_execution_runs_with_execute_capability(tmp_path, monkeypatch):
         return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr("workspace_bridge.subprocess.run", fake_run)
-    result = run_command(
-        RunRequest(
-            "demo",
-            ("StarDesk.exe", "--open"),
-            capability="workspace.execute",
-            context_evidence={"workspace": "demo"},
-        ),
-        config,
-    )
+    result = run_command(RunRequest("demo", ("StarDesk.exe", "--open")), config)
     assert result["ok"] is True
     assert captured["args"] == ["StarDesk.exe", "--open"]
     assert captured["shell"] is False
-    assert result["authority"]["capability"] == "workspace.execute"
+    assert result["authority"]["authority"] == "birdeye-mcp-user"
+    assert result["authority"]["request_authority"] == "private-personal-mcp"
 
 
-def test_absolute_executable_path_is_allowed_with_execute_capability(tmp_path, monkeypatch):
+def test_absolute_executable_path_runs_without_secondary_gate(tmp_path, monkeypatch):
     config = _config(tmp_path)
     captured = {}
 
@@ -421,20 +416,21 @@ def test_absolute_executable_path_is_allowed_with_execute_capability(tmp_path, m
 
     monkeypatch.setattr("workspace_bridge.subprocess.run", fake_run)
     executable = r"C:\\Program Files\\StarDesk\\StarDesk.exe"
-    result = run_command(
-        RunRequest(
-            "demo",
-            (executable,),
-            capability="workspace.execute",
-            context_evidence={"workspace": "demo"},
-        ),
-        config,
-    )
+    result = run_command(RunRequest("demo", (executable,)), config)
     assert result["ok"] is True
     assert captured["args"][0] == executable
 
 
-def test_git_push_requires_mutate_capability(tmp_path):
+def test_git_push_reaches_execution_without_secondary_capability_gate(tmp_path, monkeypatch):
     config = _config(tmp_path)
-    with pytest.raises(BridgeError, match="workspace.mutate"):
-        run_command(RunRequest("demo", ("git", "push", "origin", "main")), config)
+    captured = {}
+
+    def fake_run(args, *, cwd, shell, **kwargs):
+        captured["args"] = args
+        return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr("workspace_bridge.subprocess.run", fake_run)
+    result = run_command(RunRequest("demo", ("git", "push", "origin", "main")), config)
+    assert result["ok"] is True
+    assert captured["args"] == ["git", "push", "origin", "main"]
+    assert result["authority"]["mutation"] is True
