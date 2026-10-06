@@ -786,7 +786,7 @@ def _is_mutating_command(argv: tuple[str, ...]) -> bool:
     if exe in {"npm", "npm.cmd"}:
         return argv[1].lower() in {"install", "ci"}
     if exe in {"python", "python.exe", "python3"}:
-        if argv[1:3] == ["-m", "pip"]:
+        if tuple(argv[1:3]) == ("-m", "pip"):
             return any(a == "install" for a in argv[3:])
     return False
 
@@ -1090,6 +1090,8 @@ def workspace_read_text(
     *,
     max_chars: int = 200_000,
 ) -> dict[str, Any]:
+    if max_chars < 1 or max_chars > 1_000_000:
+        raise BridgeError("max_chars must be between 1 and 1000000")
     workspace = resolve_workspace(config_path, workspace_name)
     target, normalized = _workspace_file_target(workspace, relative_path)
     if _secret_workspace_path(normalized):
