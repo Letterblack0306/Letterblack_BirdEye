@@ -30,6 +30,7 @@ from workspace_bridge import (
 from workspace_identity import revision_status, workspace_identity
 from eye_database import verify_live_hash
 from birdeye_watcher import start_watcher, stop_watcher
+from capability_gateway import capability_discover, capability_invoke
 
 
 BIRDEYE_DIR = Path(__file__).resolve().parent
@@ -424,6 +425,31 @@ _WORKSPACE_COMMAND_HISTORY_SCHEMA = {
     },
 }
 
+_CAPABILITY_DISCOVER_SCHEMA = {
+    "name": "capability_discover",
+    "description": "Discover BirdEye-owned capability routes and their proven implementation owners. Transport-only routes are reported but not presented as invokable.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Optional exact capability name filter."},
+        },
+        "required": [],
+    },
+}
+
+_CAPABILITY_INVOKE_SCHEMA = {
+    "name": "capability_invoke",
+    "description": "Invoke a capability only through its existing BirdEye owner. This does not accept caller identity claims and does not bypass the owner's authorization, policy, evidence, or receipt path.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Exact capability name returned by capability_discover."},
+            "request": {"type": "object", "description": "Owner-specific request. For workspace.command use the existing RunRequest shape; for workspace.sequence use RunSequenceRequest."},
+        },
+        "required": ["name", "request"],
+    },
+}
+
 # GPT-Knowledge is the single source of truth for project -> local-path mapping.
 _LOCAL_PROJECTS_RELPATH = "project-engineering/projects/workspace/local-projects.json"
 
@@ -510,6 +536,8 @@ _TOOL_DEFINITIONS = [
     _WORKSPACE_RUN_SCHEMA,
     _WORKSPACE_RUN_SEQUENCE_SCHEMA,
     _WORKSPACE_COMMAND_HISTORY_SCHEMA,
+    _CAPABILITY_DISCOVER_SCHEMA,
+    _CAPABILITY_INVOKE_SCHEMA,
     _REVISION_STATUS_SCHEMA,
     _LOCAL_PROJECTS_SCHEMA,
 ]
@@ -536,6 +564,8 @@ _TOOL_REGISTRY = {
     "workspace_run": ("workspace", "argv", "timeout_seconds", "request_id", "task_id", "intent", "capability", "context_evidence"),
     "workspace_run_sequence": ("workspace", "commands", "stop_on_failure", "request_id", "task_id", "intent", "capability", "context_evidence"),
     "workspace_command_history": ("limit", "workspace"),
+    "capability_discover": ("name",),
+    "capability_invoke": ("name", "request"),
     "revision_status": ("workspace",),
     "local_projects": ("project",),
 }
@@ -1348,6 +1378,14 @@ def invoke(tool: str, params: dict[str, Any]) -> dict[str, Any]:
                 CONFIG_PATH,
                 limit=int(params.get("limit", 50)),
                 workspace=params.get("workspace"),
+            )
+        if tool == "capability_discover":
+            return capability_discover(params.get("name"))
+        if tool == "capability_invoke":
+            return capability_invoke(
+                str(params.get("name", "")),
+                params.get("request") or {},
+                CONFIG_PATH,
             )
         if tool == "revision_status":
             return revision_status(params.get("workspace"))
