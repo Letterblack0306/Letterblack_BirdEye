@@ -343,7 +343,7 @@ _WORKSPACE_IDENTITY_SCHEMA = {
     "inputSchema": {
         "type": "object",
         "properties": {
-            "workspace": {"type": "string", "description": "Logical workspace ID. Leave empty when only one workspace root is configured."}
+            "workspace": {"type": "string", "description": "Configured workspace ID or existing absolute directory path. Leave empty only when one configured workspace root is available."}
         },
         "required": [],
     },
@@ -355,7 +355,7 @@ _REVISION_STATUS_SCHEMA = {
     "inputSchema": {
         "type": "object",
         "properties": {
-            "workspace": {"type": "string", "description": "Logical workspace ID. Leave empty when only one workspace root is configured."}
+            "workspace": {"type": "string", "description": "Configured workspace ID or existing absolute directory path. Leave empty only when one configured workspace root is available."}
         },
         "required": [],
     },
@@ -363,11 +363,11 @@ _REVISION_STATUS_SCHEMA = {
 
 _WORKSPACE_RUN_SCHEMA = {
     "name": "workspace_run",
-    "description": "Execute any direct argv-array command inside a verified workspace. This private personal BirdEye MCP request is the execution authority; no application allowlist or secondary capability gate is required.",
+    "description": "Execute any direct argv-array command inside a configured workspace or any existing absolute directory on this machine. This private personal BirdEye MCP request is the execution authority; no application allowlist or secondary capability gate is required.",
     "inputSchema": {
         "type": "object",
         "properties": {
-            "workspace": {"type": "string", "description": "Configured workspace ID."},
+            "workspace": {"type": "string", "description": "Configured workspace ID or existing absolute directory path on this machine."},
             "argv": {"type": "array", "items": {"type": "string"}, "description": "Command and arguments as an array. Never a free-form string."},
             "timeout_seconds": {"type": "integer", "description": "Optional timeout in seconds (default 120, max 300)."},
             "request_id": {"type": "string", "description": "Optional caller-supplied request ID."},
@@ -382,11 +382,11 @@ _WORKSPACE_RUN_SCHEMA = {
 
 _WORKSPACE_RUN_SEQUENCE_SCHEMA = {
     "name": "workspace_run_sequence",
-    "description": "Execute ordered commands inside a verified workspace. Stops on first failure by default.",
+    "description": "Execute ordered commands inside a configured workspace or any existing absolute directory on this machine. Stops on first failure by default.",
     "inputSchema": {
         "type": "object",
         "properties": {
-            "workspace": {"type": "string", "description": "Configured workspace ID."},
+            "workspace": {"type": "string", "description": "Configured workspace ID or existing absolute directory path on this machine."},
             "commands": {
                 "type": "array",
                 "items": {
