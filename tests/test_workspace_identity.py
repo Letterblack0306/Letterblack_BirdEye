@@ -104,6 +104,26 @@ class WorkspaceIdentityTests(unittest.TestCase):
             self.assertTrue(revision["ok"])
             self.assertFalse(revision["git"]["is_repository"])
 
+    def test_absolute_unregistered_workspace_is_valid_runtime_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            configured = base / "configured"
+            configured.mkdir()
+            unregistered = base / "unregistered"
+            unregistered.mkdir()
+            ctx = _context(configured)
+
+            with patch.object(identity.Context, "load", return_value=ctx):
+                workspace = identity.workspace_identity(str(unregistered.resolve()))
+                revision = identity.revision_status(str(unregistered.resolve()))
+
+            self.assertTrue(workspace["ok"])
+            self.assertEqual(workspace["workspace_root"], str(unregistered.resolve()))
+            self.assertEqual(workspace["workspace_id"], str(unregistered.resolve()))
+            self.assertFalse(workspace["git"]["is_repository"])
+            self.assertTrue(revision["ok"])
+            self.assertEqual(revision["workspace_root"], str(unregistered.resolve()))
+
     def test_git_status_timeout_returns_degraded_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._repo(Path(tmp))
