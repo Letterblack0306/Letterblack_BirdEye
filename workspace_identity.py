@@ -7,6 +7,7 @@ configured workspace root and the exact HEAD observed while the tool runs.
 from __future__ import annotations
 
 import subprocess
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,19 +22,41 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+@dataclass(frozen=True)
+class _RuntimeWorkspaceRoot:
+    name: str
+    path: Path
+    root_class: str = "workspace"
+
+
 def _workspace_root(ctx: Context, workspace: str | None = None):
     roots = [root for root in ctx.roots if root.root_class == "workspace"]
     if workspace is not None:
         for root in roots:
             if root.name == workspace:
                 return root
-        raise GovernanceError(f"Unknown workspace root: {workspace}")
+
+        candidate = Path(workspace).expanduser()
+        if candidate.is_absolute():
+            try:
+                resolved = candidate.resolve(strict=True)
+            except (FileNotFoundError, OSError, RuntimeError) as exc:
+                raise GovernanceError(f"Workspace path does not exist: {workspace}") from exc
+            if not resolved.is_dir():
+                raise GovernanceError(f"Workspace path is not a directory: {resolved}")
+            return _RuntimeWorkspaceRoot(str(resolved), resolved)
+
+        raise GovernanceError(
+            f"Unknown workspace root: {workspace}. Use a configured workspace ID "
+            "or an existing absolute directory path."
+        )
     if len(roots) == 1:
         return roots[0]
     if not roots:
         raise GovernanceError("No workspace root is configured")
     raise GovernanceError(
-        "Multiple workspace roots are configured; pass the workspace root name"
+        "Multiple workspace roots are configured; pass the workspace root name "
+        "or an existing absolute directory path"
     )
 
 
