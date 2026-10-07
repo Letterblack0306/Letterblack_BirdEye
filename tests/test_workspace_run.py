@@ -77,6 +77,48 @@ def test_unknown_workspace_rejection(tmp_path):
         resolve_workspace(config, "nope")
 
 
+def test_absolute_existing_directory_resolves_without_registration(tmp_path):
+    config = _config(tmp_path)
+    unregistered = tmp_path / "outside-registry"
+    unregistered.mkdir()
+
+    workspace = resolve_workspace(config, str(unregistered.resolve()))
+
+    assert workspace.path == unregistered.resolve()
+    assert workspace.name == str(unregistered.resolve())
+
+
+def test_missing_absolute_workspace_path_is_rejected(tmp_path):
+    config = _config(tmp_path)
+    missing = (tmp_path / "missing-workspace").resolve()
+
+    with pytest.raises(BridgeError, match="Workspace path does not exist"):
+        resolve_workspace(config, str(missing))
+
+
+def test_run_command_accepts_unregistered_absolute_workspace(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    unregistered = tmp_path / "runtime-project"
+    unregistered.mkdir()
+    captured = {}
+
+    def fake_run(args, *, cwd, shell, **kwargs):
+        captured["cwd"] = str(cwd)
+        captured["shell"] = shell
+        return type("CP", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+
+    monkeypatch.setattr("workspace_bridge.subprocess.run", fake_run)
+    result = run_command(
+        RunRequest(str(unregistered.resolve()), ("cmd", "/c", "echo", "ok")),
+        config,
+    )
+
+    assert result["ok"] is True
+    assert Path(captured["cwd"]) == unregistered.resolve()
+    assert captured["shell"] is False
+    assert result["authority"]["request_authority"] == "private-personal-mcp"
+
+
 def test_run_request_rejects_free_form_command():
     with pytest.raises(BridgeError, match="Unsupported request fields"):
         RunRequest.from_mapping({"workspace": "demo", "command": "git status"})
