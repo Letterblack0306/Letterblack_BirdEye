@@ -143,14 +143,36 @@ def load_workspaces(config_path: Path) -> tuple[Workspace, ...]:
 
 
 def resolve_workspace(config_path: Path, name: str) -> Workspace:
+    """Resolve a configured workspace ID or an existing absolute directory.
+
+    BirdEye is a private personal MCP. Configured roots remain the indexed/search
+    registry, but execution is machine-global: callers may use an absolute
+    directory path directly without first hardcoding every project into
+    config.json.
+    """
     normalized = name.strip().lower()
-    for workspace in load_workspaces(config_path):
+    workspaces = load_workspaces(config_path)
+    for workspace in workspaces:
         if workspace.name == normalized:
             if not workspace.path.is_dir():
                 raise BridgeError(f"Registered workspace does not exist: {workspace.path}")
             return workspace
-    available = ", ".join(item.name for item in load_workspaces(config_path))
-    raise BridgeError(f"Unknown workspace {name!r}. Registered workspaces: {available}")
+
+    candidate = Path(name).expanduser()
+    if candidate.is_absolute():
+        try:
+            resolved = candidate.resolve(strict=True)
+        except (FileNotFoundError, OSError, RuntimeError) as exc:
+            raise BridgeError(f"Workspace path does not exist: {name}") from exc
+        if not resolved.is_dir():
+            raise BridgeError(f"Workspace path is not a directory: {resolved}")
+        return Workspace(name=str(resolved), path=resolved)
+
+    available = ", ".join(item.name for item in workspaces)
+    raise BridgeError(
+        f"Unknown workspace {name!r}. Use a configured workspace ID or an "
+        f"existing absolute directory path. Registered workspaces: {available}"
+    )
 
 
 def _validate_relative_target(value: str) -> None:
