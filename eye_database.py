@@ -22,6 +22,15 @@ from eye import load_config
 EYE_DATA_DIR = Path(__file__).resolve().parent / "eye_Databa"
 DEFAULT_MAX_BYTES = 1024 * 1024 * 1024
 _DOMAINS = ("workspace", "memory", "skills")
+GENERATED_DIRS = frozenset({
+    "node_modules", ".pnpm", ".git", ".venv", "__pycache__",
+    ".pytest_cache", "dist", "build", "target", "coverage",
+})
+
+
+def is_generated_workspace_path(relative: Path) -> bool:
+    """Exclude derivative directories, never canonical source files."""
+    return any(part.lower() in GENERATED_DIRS for part in relative.parts)
 
 
 def _max_database_bytes() -> int:
@@ -220,6 +229,11 @@ def record_file_event(path: str | Path, event: str = "modified", max_bytes: int 
         return {"ok": False, "action": "ignored", "path": str(physical), "reason": "unconfigured"}
     domain, source_id, agent, source_root = source
     relative = physical.relative_to(source_root).as_posix()
+    # Generated dependency/build trees are not canonical workspace knowledge.
+    # Skip before opening SQLite to avoid repeated ingestion and shard growth.
+    if domain == "workspace" and is_generated_workspace_path(physical.relative_to(source_root)):
+        return {"ok": True, "action": "ignored_generated", "domain": domain,
+                "source_id": source_id, "path": relative}
     db_path, number = _next_database(domain)
     conn = _connect(db_path)
     try:
@@ -410,12 +424,16 @@ def sync_all(max_bytes: int = 5_000_000, roots: set[str] | None = None) -> dict[
             if not source_root.is_dir():
                 continue
             seen: set[str] = set()
-            for path in source_root.rglob("*"):
-                if path.is_file():
-                    seen.add(path.resolve().relative_to(source_root.resolve()).as_posix())
-                    result = record_file_event(path, "initial", max_bytes)
-                    if result.get("ok") and result.get("action") == "indexed":
-                        counts[domain] += 1
+            for parent, dirs, files in os.walk(source_root):
+                if domain == "workspace":
+                    dirs[:] = [name for name in dirs if name.lower() not in GENERATED_DIRS]
+                for filename in files:
+                    path = Path(parent) / filename
+                    if path.is_file():
+                        seen.add(path.resolve().relative_to(source_root.resolve()).as_posix())
+                        result = record_file_event(path, "initial", max_bytes)
+                        if result.get("ok") and result.get("action") == "indexed":
+                            counts[domain] += 1
             db_path, _number = _next_database(domain)
             conn = _connect(db_path)
             try:
@@ -429,6 +447,8 @@ def sync_all(max_bytes: int = 5_000_000, roots: set[str] | None = None) -> dict[
             for row in indexed:
                 relative = str(row["relative_path"]).replace("\\", "/")
                 if relative not in seen:
+                    if domain == "workspace" and is_generated_workspace_path(Path(relative)):
+                        continue
                     result = record_file_event(Path(row["physical_path"]), "deleted", max_bytes)
                     if result.get("ok") and result.get("action") == "deleted":
                         counts[domain] += 1

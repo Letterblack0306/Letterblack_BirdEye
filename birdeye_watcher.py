@@ -23,7 +23,7 @@ from watchdog.observers import Observer
 
 import agent
 from agent import Context, matches_any, path_allowed
-from eye_database import record_file_event
+from eye_database import is_generated_workspace_path, record_file_event
 
 
 class _WatcherLease:
@@ -134,6 +134,8 @@ class _IndexHandler(FileSystemEventHandler):
         root, relative = self._resolve(target)
         if root is None or relative is None:
             return
+        if root.root_class == "workspace" and is_generated_workspace_path(relative):
+            return
         virtual = _virtual(root, relative)
         if not _governed(self.ctx, root, relative, virtual):
             return
@@ -152,6 +154,8 @@ class _IndexHandler(FileSystemEventHandler):
     def _remove(self, src_path: str) -> None:
         root, relative = self._resolve(src_path)
         if root is None or relative is None:
+            return
+        if root.root_class == "workspace" and is_generated_workspace_path(relative):
             return
         virtual = _virtual(root, relative)
         result = agent.index_file_event(

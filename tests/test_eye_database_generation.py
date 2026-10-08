@@ -116,3 +116,21 @@ def test_sync_reconciles_renamed_files_and_projection(tmp_path, monkeypatch):
         assert query_conn.execute("SELECT 1 FROM files WHERE path='workspace-test/new.txt'").fetchone() is not None
     finally:
         query_conn.close()
+
+def test_generated_dependencies_not_recorded_or_rescanned(tmp_path, monkeypatch):
+    root = tmp_path / "source"
+    (root / "node_modules" / "package").mkdir(parents=True)
+    ignored = root / "node_modules" / "package" / "index.js"
+    ignored.write_text("compiled", encoding="utf-8")
+    valid = root / "important.py"
+    valid.write_text("x = 1", encoding="utf-8")
+    data_dir = tmp_path / "eyes"
+    monkeypatch.setattr(eye_database, "EYE_DATA_DIR", data_dir)
+    monkeypatch.setattr(eye_database, "load_config", lambda: _config(root))
+    assert eye_database.record_file_event(ignored)["action"] == "ignored_generated"
+    assert not data_dir.exists()
+    assert eye_database.sync_all()["indexed"]["workspace"] == 1
+    import sqlite3
+    with sqlite3.connect(data_dir / "eye_workspace_data_01.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 1
+        assert conn.execute("SELECT relative_path FROM files").fetchone()[0] == "important.py"
