@@ -130,7 +130,9 @@ def test_audit_no_root_is_unknown(tmp_path: Path):
     assert audit["evidenceLevel"] == bp.EVIDENCE_UNKNOWN
 
 
-def test_audit_non_git_directory_is_supported_level(tmp_path: Path):
+def test_audit_non_git_directory_is_supported_level(tmp_path: Path, monkeypatch):
+    # Prevent parent Git repositories from leaking into the temporary fixture.
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     plain = tmp_path / "plain"
     plain.mkdir()
     config = _write_config(tmp_path, [_project(plain)])

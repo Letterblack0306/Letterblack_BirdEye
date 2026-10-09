@@ -61,8 +61,21 @@ def _git_value(path: Path, *args: str) -> str:
 
 
 def _git_repository(path: Path) -> bool:
+    # Identity must be owned by the workspace root. Git discovery walks up to a
+    # parent repository (for example %TEMP% under C:\Users\prave), which makes a
+    # plain directory look like a repo and forces a full-tree untracked scan.
+    if not (path / ".git").exists():
+        return False
     result = _git(path, "rev-parse", "--is-inside-work-tree", check=False)
-    return result.returncode == 0 and result.stdout.strip().lower() == "true"
+    if result.returncode != 0 or result.stdout.strip().lower() != "true":
+        return False
+    top = _git(path, "rev-parse", "--show-toplevel", check=False)
+    if top.returncode != 0:
+        return False
+    try:
+        return Path(top.stdout.strip()).resolve() == path.resolve()
+    except OSError:
+        return False
 
 
 def _branch_and_head(path: Path) -> tuple[str | None, str | None, bool]:

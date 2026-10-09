@@ -419,3 +419,31 @@ def test_run_command_rejects_unknown_npm(tmp_path):
     config = _config(tmp_path)
     with pytest.raises(BridgeError, match="not allowlisted"):
         run_command(RunRequest("demo", ("npm.cmd", "exec", "something")), config)
+
+
+def test_run_command_allows_external_installed_app(tmp_path, monkeypatch):
+    workspace = tmp_path / "demo"
+    workspace.mkdir()
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({
+        "knowledge_roots": [{"name": "demo", "path": str(workspace)}],
+        "state_dir": str(tmp_path / "state"),
+        "allow_global_execution": True,
+    }), encoding="utf-8")
+
+    external_exe = r"C:\Program Files\Epic Games\RealityScan_2.2\RealityScan.exe"
+    captured = {}
+
+    def fake_run(args, *, cwd, shell, **kwargs):
+        if list(args) == [external_exe, "-help"]:
+            captured["argv"] = list(args)
+            captured["cwd"] = str(cwd)
+            return type("CP", (), {"returncode": 0, "stdout": "RealityScan v2.2", "stderr": ""})()
+        # The bridge also probes Git identity; keep that distinct from the app invocation.
+        return type("CP", (), {"returncode": 128, "stdout": "", "stderr": "not a git repository"})()
+
+    monkeypatch.setattr("workspace_bridge.subprocess.run", fake_run)
+    result = run_command(RunRequest("demo", (external_exe, "-help")), config)
+    assert result["ok"] is True
+    assert captured["argv"] == [external_exe, "-help"]
+    assert captured["cwd"] == str(workspace.resolve())

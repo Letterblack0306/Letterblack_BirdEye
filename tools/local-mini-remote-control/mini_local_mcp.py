@@ -197,6 +197,68 @@ def file_hash(path: str, algorithm: str = "sha256") -> dict[str, Any]:
 
 
 @mcp.tool()
+def read_image(path: str) -> list:
+    """Read an allowed PNG/JPEG as native MCP image content for exact multimodal reference binding."""
+    import base64
+    import json
+    try:
+        from mcp.types import ImageContent, TextContent
+    except Exception:
+        ImageContent = None  # type: ignore
+        TextContent = None  # type: ignore
+
+    p = _allowed(path)
+    if not p.is_file():
+        if TextContent is not None:
+            return [TextContent(type="text", text=json.dumps(_result(False, error=f"Not a file: {p}")))]
+        return [_result(False, error=f"Not a file: {p}")]
+
+    mime_by_suffix = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+    }
+    mime_type = mime_by_suffix.get(p.suffix.lower())
+    if mime_type is None:
+        if TextContent is not None:
+            return [TextContent(
+                type="text",
+                text=json.dumps(_result(
+                    False,
+                    error=f"Unsupported image type: {p.suffix}",
+                    supported=sorted(mime_by_suffix),
+                )),
+            )]
+        return [_result(False, error=f"Unsupported image type: {p.suffix}", supported=sorted(mime_by_suffix))]
+
+    size = p.stat().st_size
+    max_bytes = 32 * 1024 * 1024
+    if size > max_bytes:
+        if TextContent is not None:
+            return [TextContent(
+                type="text",
+                text=json.dumps(_result(False, error="Image too large", path=str(p), bytes=size, max_bytes=max_bytes)),
+            )]
+        return [_result(False, error="Image too large", path=str(p), bytes=size, max_bytes=max_bytes)]
+
+    raw = p.read_bytes()
+    metadata = _result(
+        True,
+        mime_type=mime_type,
+        bytes=len(raw),
+        sha256=hashlib.sha256(raw).hexdigest(),
+        transport="native_mcp_image",
+        path=str(p),
+    )
+    if ImageContent is not None and TextContent is not None:
+        return [
+            ImageContent(type="image", data=base64.b64encode(raw).decode("ascii"), mimeType=mime_type),
+            TextContent(type="text", text=json.dumps(metadata, ensure_ascii=False)),
+        ]
+    return [_result(True, image_b64=base64.b64encode(raw).decode("ascii"), **metadata)]
+
+
+@mcp.tool()
 def write_text(path: str, text: str, overwrite: bool = False) -> dict[str, Any]:
     """Write UTF-8 text under an allowed root."""
     p = _allowed(path)

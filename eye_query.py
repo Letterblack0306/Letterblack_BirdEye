@@ -519,24 +519,30 @@ def _read_applied_generation(domain: str, number: int = 1) -> int:
     query_path = path(domain, "query", number)
     if not query_path.exists():
         return 0
-    conn = sqlite3.connect(str(query_path), timeout=60)
     try:
-        row = conn.execute("SELECT value FROM meta WHERE key='applied_generation'").fetchone()
-        return int(row[0]) if row else 0
-    finally:
-        conn.close()
+        conn = sqlite3.connect(str(query_path), timeout=60)
+        try:
+            row = conn.execute("SELECT value FROM meta WHERE key='applied_generation'").fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            conn.close()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        return 0
 
 
 def _query_projection_contract(domain: str, number: int = 1) -> str:
     query_path = path(domain, "query", number)
     if not query_path.exists():
         return "UNPROVEN"
-    conn = sqlite3.connect(str(query_path), timeout=60)
     try:
-        row = conn.execute("SELECT value FROM meta WHERE key='projection_contract'").fetchone()
-        return str(row[0]) if row else "UNPROVEN"
-    finally:
-        conn.close()
+        conn = sqlite3.connect(str(query_path), timeout=60)
+        try:
+            row = conn.execute("SELECT value FROM meta WHERE key='projection_contract'").fetchone()
+            return str(row[0]) if row else "UNPROVEN"
+        finally:
+            conn.close()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError):
+        return "UNPROVEN"
 def rebuild_query_projection(domain: str, number: int = 1) -> dict[str, Any]:
     """Deterministically rebuild a workspace-style query projection from EYES only.
 
