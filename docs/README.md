@@ -11,6 +11,10 @@ Use this page to choose the right source instead of treating every document as e
 | [EYES_REPLAY_PROJECTION_CONTRACT.md](EYES_REPLAY_PROJECTION_CONTRACT.md) | Replay/projection contract | Component contract |
 | [BIRDEYE_HYBRID_INDEX_VECTOR_RETRIEVAL_PLAN.md](BIRDEYE_HYBRID_INDEX_VECTOR_RETRIEVAL_PLAN.md) | Planned hybrid retrieval work | Plan; do not treat as implemented |
 
+## Governance and blocker resolution
+
+Use [Governance and Rule Discovery](GOVERNANCE_RULE_ROUTING.md) to locate applicable rules in BirdEye, GPT-Knowledge, LB Guards Rules and LBE Core. It separates current enforcement from advisory documentation and explains how to resolve authorized prerequisites and resume the original task. The route itself never grants execution permission.
+
 ## Reading rule
 
 Current runtime and current source outrank this documentation when they conflict. Historical context, memory, prior agent output, and GPT-K references are supporting evidence and must not silently override current implementation truth.
