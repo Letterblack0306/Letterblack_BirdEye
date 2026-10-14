@@ -79,6 +79,10 @@ The access-state CLI and the system executor are separate acceptance surfaces. A
 
 The MCP server is client-facing and normally uses stdio. Watcher startup must not block the initialization handshake. A client-owned stdio process normally ends on EOF/shutdown; preserving a process across client disconnects requires an explicit ownership/lifecycle mechanism rather than merely increasing an idle timeout.
 
+## Finding governance and resolving prerequisites
+
+Use [Governance and Rule Discovery](GOVERNANCE_RULE_ROUTING.md) before interpreting cross-repository rules or proposing repairs. It points to GPT-Knowledge, LB Guards Rules, LBE Core and BirdEye's current authority surfaces. Separate the active machine policy from documentation, historical plans and stale indexes; recoverable prerequisites should be resolved through authorized routes before continuing, never bypassed.
+
 ## Change discipline
 
 1. Identify the exact owner and bounded behavior first.
