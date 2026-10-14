@@ -68,6 +68,10 @@ live runtime evidence
 
 Historical material can explain prior decisions; it must not silently override current source or runtime observations.
 
+## Governance discovery
+
+For agents looking for applicable rules, documentation, enforcement ownership, and legitimate solutions to recoverable blockers, use [Governance and Rule Discovery](docs/GOVERNANCE_RULE_ROUTING.md). Identify the current workspace policy before classifying a blocker; resolve authorized prerequisites and continue. An explicit DENY remains binding until a proper authorization changes it.
+
 ## Execution boundaries
 
 `workspace_run` and `workspace_run_sequence` are the normal governed execution surfaces. Workspace confinement and policy remain in force.
