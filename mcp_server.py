@@ -361,6 +361,27 @@ _REVISION_STATUS_SCHEMA = {
     },
 }
 
+_DESKTOP_ACTION_SCHEMA = {
+    "name": "desktop_action",
+    "description": "Windows interactive desktop capture and input through BirdEye workspace execution; capture returns an image and its execution receipt.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["capture", "cursor", "move", "click", "type"]},
+            "x": {"type": "integer"},
+            "y": {"type": "integer"},
+            "button": {"type": "string", "enum": ["left", "right", "middle"]},
+            "text": {"type": "string", "maxLength": 1000},
+            "max_width": {"type": "integer", "minimum": 64, "maximum": 1920},
+            "client_id": {"type": "string", "minLength": 1, "maxLength": 128},
+            "reference_id": {"type": "string"},
+            "force_full": {"type": "boolean"}
+        },
+        "required": ["action"],
+        "additionalProperties": False
+    }
+}
+
 _WORKSPACE_RUN_SCHEMA = {
     "name": "workspace_run",
     "description": "Execute any direct argv-array command inside a configured workspace or any existing absolute directory on this machine. This private personal BirdEye MCP request is the execution authority; no application allowlist or secondary capability gate is required.",
@@ -508,6 +529,7 @@ _TOOL_DEFINITIONS = [
     _SKILLS_SCHEMA,
     _WORKSPACE_IDENTITY_SCHEMA,
     _WORKSPACE_RUN_SCHEMA,
+    _DESKTOP_ACTION_SCHEMA,
     _WORKSPACE_RUN_SEQUENCE_SCHEMA,
     _WORKSPACE_COMMAND_HISTORY_SCHEMA,
     _REVISION_STATUS_SCHEMA,
@@ -533,6 +555,7 @@ _TOOL_REGISTRY = {
     "memory_sources": ("conversation_id", "node_id", "memory_id"),
     "skills": ("operation", "prefix", "rel", "max_bytes"),
     "workspace_identity": ("workspace",),
+    "desktop_action": ("action", "x", "y", "button", "text", "max_width", "client_id", "reference_id", "force_full"),
     "workspace_run": ("workspace", "argv", "timeout_seconds", "request_id", "task_id", "intent", "capability", "context_evidence"),
     "workspace_run_sequence": ("workspace", "commands", "stop_on_failure", "request_id", "task_id", "intent", "capability", "context_evidence"),
     "workspace_command_history": ("limit", "workspace"),
@@ -1337,6 +1360,67 @@ def invoke(tool: str, params: dict[str, Any]) -> dict[str, Any]:
             return _skills_call(**params)
         if tool == "workspace_identity":
             return workspace_identity(params.get("workspace"))
+        if tool == "desktop_action":
+            action = params.get("action")
+            if action not in ("capture", "cursor", "move", "click", "type"):
+                raise ValueError("unknown desktop action")
+            argv = [sys.executable, str(BIRDEYE_DIR / "desktop_surface.py"), action]
+            if action in ("move", "click"):
+                for key in ("x", "y"):
+                    if type(params.get(key)) is not int:
+                        raise ValueError(key + " must be an integer")
+                    argv.extend(["--" + key, str(params[key])])
+            if action == "click":
+                button = params.get("button", "left")
+                if button not in ("left", "right", "middle"):
+                    raise ValueError("invalid button")
+                argv.extend(["--button", button])
+            if action == "type":
+                value = params.get("text")
+                if not isinstance(value, str) or not (1 <= len(value) <= 1000):
+                    raise ValueError("text length must be 1-1000")
+                argv.extend(["--text", value])
+            if action == "capture":
+                width = params.get("max_width", 1280)
+                if type(width) is not int or not (64 <= width <= 1920):
+                    raise ValueError("max_width must be between 64 and 1920")
+                argv.extend(["--max-width", str(width)])
+                capture_path = BIRDEYE_DIR / "state" / ("desktop-capture-" + uuid.uuid4().hex + ".png")
+                argv.extend(["--output", str(capture_path)])
+            receipt = run_command(RunRequest.from_mapping({
+                "workspace": str(BIRDEYE_DIR),
+                "argv": argv,
+                "intent": "desktop-" + action,
+            }), CONFIG_PATH)
+            if not receipt.get("ok"):
+                return receipt
+            output = json.loads(receipt.get("stdout", "{}"))
+            if not output.get("ok"):
+                return {"ok": False, "execution": receipt}
+            result = {key: value for key, value in output.items() if key != "imageBase64"}
+            result["execution_receipt_path"] = receipt.get("execution_history", {}).get("receipt_path")
+            result["authority"] = receipt.get("authority")
+            if action == "capture":
+                import base64
+                try:
+                    image_bytes = capture_path.read_bytes()
+                    if hashlib.sha256(image_bytes).hexdigest() != output.get("sha256"):
+                        raise ValueError("screenshot hash mismatch")
+                    from desktop_adaptive import adaptive_frame
+                    adaptive = adaptive_frame(
+                        image_bytes,
+                        cache_root=BIRDEYE_DIR / "state" / "desktop_frames",
+                        client_id=params.get("client_id", "default"),
+                        reference_id=params.get("reference_id"),
+                        force_full=params.get("force_full", False),
+                    )
+                    payload = adaptive.pop("_image_bytes")
+                    result.update(adaptive)
+                    if payload is not None:
+                        result["_image_base64"] = base64.b64encode(payload).decode("ascii")
+                finally:
+                    capture_path.unlink(missing_ok=True)
+            return result
         if tool == "workspace_run":
             request = RunRequest.from_mapping(params)
             return run_command(request, CONFIG_PATH)
@@ -1685,7 +1769,7 @@ def serve_stdio() -> None:
                         "jsonrpc": "2.0",
                         "id": request_id,
                         "result": {
-                            "content": _text_content(result),
+                            "content": ([{"type":"text","text":json.dumps({k:v for k,v in result.items() if k!="_image_base64"},ensure_ascii=False)},{"type":"image","data":result["_image_base64"],"mimeType":"image/png"}] if isinstance(result,dict) and result.get("_image_base64") else _text_content(result)),
                             "isError": is_error,
                         },
                     })
