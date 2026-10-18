@@ -18,6 +18,8 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +27,8 @@ from typing import Any, Sequence
 
 _MAX_UNTRACKED_FILES = 500
 _MAX_UNTRACKED_FILE_BYTES = 1_000_000
+_UNTRACKED_BUDGET_SECONDS = 5.0
+_MAX_RECEIPT_PATHS = 100  # display cap only; hashes and diffs use the full sets
 
 
 def _sha256(data: bytes) -> str:
@@ -52,10 +56,25 @@ def _git(root: Path, *args: str, timeout: int = 30) -> tuple[int, str]:
             errors="replace",
             timeout=timeout,
             shell=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         return completed.returncode, completed.stdout
     except (subprocess.TimeoutExpired, OSError):
         return 1, ""
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Kill git and its children (the Windows git.exe shim spawns a child)."""
+    try:
+        if proc.poll() is None and hasattr(subprocess, "CREATE_NO_WINDOW"):
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW, timeout=10,
+            )
+        proc.kill()
+    except Exception:
+        pass
 
 
 def is_git_repository(root: Path) -> bool:
@@ -81,12 +100,57 @@ def capture_diff_state(root: Path) -> dict[str, Any]:
     _, staged = _git(root, "diff", "--cached", "--no-ext-diff")
 
     untracked: list[dict[str, str]] = []
-    code, others = _git(root, "ls-files", "--others", "--exclude-standard")
-    if code == 0:
-        for line in others.splitlines():
-            path = line.strip()
-            if not path or len(untracked) >= _MAX_UNTRACKED_FILES:
+    truncated = False
+    # Stream the listing so a huge untracked set (e.g. a home-directory repo)
+    # cannot stall capture: stop at the file cap or the wall-clock budget.
+    deadline = time.monotonic() + _UNTRACKED_BUDGET_SECONDS
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            ["git", "-C", str(root), "ls-files", "--others", "--exclude-standard"],
+            cwd=str(root),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            shell=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        lines: list[str] = []
+        # git may emit nothing until its walk completes; a timer enforces the budget.
+        killer = threading.Timer(_UNTRACKED_BUDGET_SECONDS, _kill_tree, args=(proc,))
+        killer.daemon = True
+        killer.start()
+        for raw in proc.stdout:  # type: ignore[union-attr]
+            path = raw.strip()
+            if not path:
+                continue
+            if len(lines) >= _MAX_UNTRACKED_FILES or time.monotonic() > deadline:
+                truncated = True
                 break
+            lines.append(path)
+        killer.cancel()
+        if proc.poll() is None:
+            proc.wait(timeout=5)
+        if proc.returncode not in (0, None) and not truncated:
+            truncated = True  # killed by budget timer or git error: listing incomplete
+    except OSError:
+        lines = []
+        truncated = True
+    finally:
+        if proc is not None:
+            if proc.poll() is None:
+                _kill_tree(proc)
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+            if proc.stdout:
+                proc.stdout.close()
+    if True:
+        for path in lines:
             file_path = root / path
             try:
                 if file_path.stat().st_size > _MAX_UNTRACKED_FILE_BYTES:
@@ -101,6 +165,7 @@ def capture_diff_state(root: Path) -> dict[str, Any]:
         "unstaged_patch_sha256": _sha256_text(unstaged),
         "staged_patch_sha256": _sha256_text(staged),
         "untracked": sorted(untracked, key=lambda item: item["path"]),
+        "untracked_truncated": truncated,
     }
     return {
         "is_repository": True,
@@ -110,6 +175,7 @@ def capture_diff_state(root: Path) -> dict[str, Any]:
         "unstaged_patch_sha256": canonical["unstaged_patch_sha256"],
         "staged_patch_sha256": canonical["staged_patch_sha256"],
         "untracked_count": len(canonical["untracked"]),
+        "untracked_truncated": truncated,
         "diff_state_sha256": _canonical_sha256(canonical),
     }
 
@@ -172,11 +238,16 @@ def build_execution_receipt(
 
     return {
         **canonical_receipt,
-        "preexisting_changed_paths": sorted(before_paths),
-        "changed_paths_after": sorted(after_paths),
+        "preexisting_changed_paths": sorted(before_paths)[:_MAX_RECEIPT_PATHS],
+        "preexisting_changed_paths_count": len(before_paths),
+        "changed_paths_after": sorted(after_paths)[:_MAX_RECEIPT_PATHS],
+        "changed_paths_after_count": len(after_paths),
         "overall_evidence": (
             "REVIEW" if (exit_code == 0 and changed_by_command)
-            else ("PROVEN" if exit_code == 0 else "FAILED")
+            else (
+                "PARTIAL" if (exit_code == 0 and (before.get("untracked_truncated") or after.get("untracked_truncated")))
+                else ("PROVEN" if exit_code == 0 else "FAILED")
+            )
         ),
         "execution_evidence_sha256": _canonical_sha256(canonical_receipt),
     }

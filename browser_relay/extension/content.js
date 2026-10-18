@@ -116,13 +116,29 @@
           type: button.getAttribute("type"),
           disabled: !!button.disabled
         }));
+        const rateButton = Array.from(document.querySelectorAll("button")).find(
+          button => button.getAttribute("aria-label") === "Rate response"
+        );
+        const responseProbe = [];
+        let probeNode = rateButton;
+        for (let depth = 0; probeNode && depth < 10; depth += 1, probeNode = probeNode.parentElement) {
+          responseProbe.push({
+            tag: probeNode.tagName,
+            role: probeNode.getAttribute?.("role"),
+            testid: probeNode.getAttribute?.("data-testid"),
+            author: probeNode.getAttribute?.("data-message-author-role"),
+            cls: String(probeNode.className || "").slice(0, 300),
+            text: String(probeNode.innerText || "").trim().slice(0, 1200)
+          });
+        }
         await complete(command.command_id, {
           ok: true,
           url: location.href,
           title: document.title,
           composer: composer ? {tag: composer.tagName, role: composer.getAttribute("role"), aria: composer.getAttribute("aria-label"), placeholder: composer.getAttribute("placeholder"), outer: composer.outerHTML.slice(0,1200)} : null,
           form: composer?.closest("form") ? composer.closest("form").outerHTML.slice(0,2000) : null,
-          buttons
+          buttons,
+          response_probe: responseProbe
         });
         return;
       }

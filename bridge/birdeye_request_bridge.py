@@ -31,7 +31,7 @@ def utc_now() -> str:
 
 
 def load_json(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
+    value = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(value, dict):
         raise BridgeError(f"Expected JSON object: {path}")
     return value

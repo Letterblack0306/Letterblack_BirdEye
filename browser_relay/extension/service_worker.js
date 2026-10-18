@@ -88,13 +88,29 @@ async function executeInTab(tabId, command) {
       }
       if (command.action === "diagnose") {
         const c = composer();
+        const rateButton = Array.from(document.querySelectorAll("button")).find(
+          button => button.getAttribute("aria-label") === "Rate response"
+        );
+        const responseProbe = [];
+        let probeNode = rateButton;
+        for (let depth = 0; probeNode && depth < 10; depth += 1, probeNode = probeNode.parentElement) {
+          responseProbe.push({
+            tag: probeNode.tagName,
+            role: probeNode.getAttribute?.("role"),
+            testid: probeNode.getAttribute?.("data-testid"),
+            author: probeNode.getAttribute?.("data-message-author-role"),
+            cls: String(probeNode.className || "").slice(0,300),
+            text: String(probeNode.innerText || "").trim().slice(0,1200)
+          });
+        }
         return {
           ok: true, url: location.href, title: document.title,
           composer: c ? {tag:c.tagName, role:c.getAttribute("role"), aria:c.getAttribute("aria-label"), outer:c.outerHTML.slice(0,1200)} : null,
           buttons: Array.from(document.querySelectorAll("button")).slice(-40).map(b => ({
             aria:b.getAttribute("aria-label"), testid:b.getAttribute("data-testid"),
             type:b.getAttribute("type"), disabled:!!b.disabled
-          }))
+          })),
+          response_probe: responseProbe
         };
       }
       if (command.action === "reply") {
@@ -146,14 +162,25 @@ async function dispatchOne(tab) {
 }
 
 async function poll() {
-  // Command consumption stays in the content script for low-latency DOM/UI execution.
-  // The service worker only supplies tab identity and registration lifecycle.
+  const tabs = await chrome.tabs.query({});
+  const supported = tabs.filter(isChatGPT);
+  await Promise.allSettled(supported.map(tab => dispatchOne(tab)));
 }
 
-chrome.runtime.onInstalled.addListener(() => {});
-chrome.runtime.onStartup.addListener(() => {});
-chrome.tabs.onCreated.addListener(register);
-chrome.tabs.onUpdated.addListener((_tabId, _change, tab) => register(tab));
+async function ensureAlarm() {
+  const existing = await chrome.alarms.get(ALARM);
+  if (!existing) chrome.alarms.create(ALARM, {periodInMinutes: 0.5});
+}
+
+chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm?.name === ALARM) poll().catch(() => {});
+});
+chrome.runtime.onInstalled.addListener(() => { ensureAlarm().then(poll).catch(() => {}); });
+chrome.runtime.onStartup.addListener(() => { ensureAlarm().then(poll).catch(() => {}); });
+chrome.tabs.onCreated.addListener(tab => { register(tab).then(() => dispatchOne(tab)).catch(() => {}); });
+chrome.tabs.onUpdated.addListener((_tabId, change, tab) => {
+  register(tab).catch(() => {});
+  if (change.status === "complete") dispatchOne(tab).catch(() => {});
+});
 chrome.tabs.onRemoved.addListener(tabId => { post("/tabs/unregister", {tab_id:String(tabId)}).catch(() => {}); });
-ensureAlarm();
-poll();
+ensureAlarm().then(poll).catch(() => {});

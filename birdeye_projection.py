@@ -140,6 +140,7 @@ def _git(argv_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
             timeout=30,
             shell=False,
             check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except subprocess.TimeoutExpired as exc:
         raise ProjectionError(f"git timed out: {' '.join(args)}") from exc
@@ -251,7 +252,7 @@ class Registry:
 
     def reload(self) -> None:
         try:
-            raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+            raw = json.loads(self.config_path.read_text(encoding="utf-8-sig"))
         except FileNotFoundError as exc:
             raise ProjectionError(f"BirdEye projection config not found: {self.config_path}") from exc
         except json.JSONDecodeError as exc:

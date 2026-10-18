@@ -1,0 +1,7 @@
+{
+  "front_door": 8766,
+  "reserved_range": [8767, 8799],
+  "services": {
+    "freellmapi": 8767
+  }
+}

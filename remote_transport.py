@@ -21,7 +21,7 @@ DEFAULT_PORT = 8765
 
 def _load_lease() -> dict:
     try:
-        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        data = json.loads(STATE_FILE.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return {"open": False, "last_activity": 0}
     return {

@@ -86,7 +86,7 @@
         },
         {
           "id": "claude",
-          "path": "C:\\Users\\prave\\.claude\\sessions",
+          "path": "C:\\Users\\prave\\.claude\\projects",
           "source_class": "agent-session",
           "agent": "claude"
         },

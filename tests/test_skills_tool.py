@@ -170,8 +170,8 @@ def test_skills_tool_has_one_shared_namespace_and_no_agent_partition():
     schema = next(tool for tool in mcp_server._TOOL_DEFINITIONS if tool["name"] == "skills")
     props = schema["inputSchema"]["properties"]
     assert schema["inputSchema"]["properties"]["operation"]["enum"] == [
-        "query", "fetch", "resolve", "fetch_locked", "relock",
-        "complete_task", "promote", "check_drift", "status"
+        "catalog", "query", "fetch", "resource", "resolve", "fetch_locked",
+        "relock", "complete_task", "promote", "check_drift", "status"
     ]
     assert "agent" not in props
     assert "agent_id" not in props
@@ -271,3 +271,147 @@ def test_memory_mcp_has_no_skill_tools():
     )
     names = {tool.name for tool in asyncio.run(app.list_tools())}
     assert not {"skills", "skills_list", "skills_fetch", "skills_hash_status"}.intersection(names)
+
+
+def test_agent_skills_portable_metadata_and_invalid_skill_not_selected(tmp_path, monkeypatch):
+    root = _configure(tmp_path, monkeypatch)
+    valid = root / "agent-workflows" / "task-review" / "SKILL.md"
+    valid.parent.mkdir(parents=True)
+    valid.write_text("---\nname: task-review\ndescription: Review scoped tasks and evidence.\n---\n# Steps\nReview runtime.\n", encoding="utf-8")
+    invalid = root / "agent-workflows" / "wrong-folder" / "SKILL.md"
+    invalid.parent.mkdir(parents=True)
+    invalid.write_text("---\nname: not-the-folder\ndescription: Review scoped tasks and evidence.\n---\n", encoding="utf-8")
+    found = mcp_server.invoke("skills", {"operation": "query", "query": "review scoped tasks", "max_results": 15})
+    selected = next(x for x in found["results"] if x["path"].endswith("task-review/SKILL.md"))
+    assert selected["skill_metadata"] == {"name": "task-review", "description": "Review scoped tasks and evidence.", "format": "agent-skills"}
+    assert mcp_server._agent_skill_metadata("agent-workflows/wrong-folder/SKILL.md", invalid.read_text(encoding="utf-8")) is None
+
+
+def test_local_projects_parses_bom_without_editing_mapping(tmp_path, monkeypatch):
+    source = tmp_path / "knowledge"
+    file = source / "projects.json"
+    file.parent.mkdir()
+    payload = '{"projects":{"brew":{"local_path":"C:/Workspace/Brew"}}}'
+    file.write_bytes(b"\xef\xbb\xbf" + payload.encode("utf-8"))
+    monkeypatch.setattr(mcp_server, "_load_ctx", lambda: object())
+    monkeypatch.setattr(mcp_server, "_gpt_knowledge_root", lambda ctx: source)
+    monkeypatch.setattr(mcp_server, "_LOCAL_PROJECTS_RELPATH", "projects.json")
+    result = mcp_server.local_projects("brew")
+    assert result["ok"] is True
+    assert result["projects"]["brew"]["local_path"] == "C:/Workspace/Brew"
+    assert file.read_bytes().startswith(b"\xef\xbb\xbf")
+
+
+def test_catalog_uses_portable_agent_skill_metadata_only_and_paginates(tmp_path, monkeypatch):
+    root = _configure(tmp_path, monkeypatch)
+    for name in ("audit-review", "code-review"):
+        skill_file = root / "portable" / name / "SKILL.md"
+        skill_file.parent.mkdir(parents=True)
+        skill_file.write_text(
+            f"---\nname: {name}\ndescription: Review governed task receipts and runtime.\n---\n"
+            "# Private complete skill instructions, never included in catalog.\n",
+            encoding="utf-8",
+        )
+    result = mcp_server.invoke("skills", {
+        "operation": "catalog", "prefix": "portable/", "query": "review",
+        "max_results": 1,
+    })
+    assert result["ok"] is True
+    assert result["total"] == 2
+    assert result["next_offset"] == 1
+    assert result["results"][0]["format"] == "agent-skills"
+    assert "content" not in result["results"][0]
+    assert "Private complete skill instructions" not in json.dumps(result)
+    second = mcp_server.invoke("skills", {
+        "operation": "catalog", "prefix": "portable/", "query": "review",
+        "offset": 1, "max_results": 1,
+    })
+    assert second["next_offset"] is None
+    assert {result["results"][0]["name"], second["results"][0]["name"]} == {
+        "audit-review", "code-review"
+    }
+
+
+def test_locked_skill_resource_snapshot_is_stable_and_relative(tmp_path, monkeypatch):
+    root = _configure(tmp_path, monkeypatch)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    skill = root / "portable" / "audit-review" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        "---\nname: audit-review\ndescription: Review governed runtime receipts.\n"
+        "---\n# Use a runtime receipt before claiming completion.\n",
+        encoding="utf-8",
+    )
+    reference = skill.parent / "references" / "receipts.md"
+    reference.parent.mkdir()
+    reference.write_text("receipt verification baseline", encoding="utf-8")
+    params = {
+        "workspace_root": str(workspace), "task": "review-task",
+        "domain": "audit", "query": "governed runtime receipts",
+        "prefix": "portable/",
+    }
+    resolved = mcp_server.invoke("skills", {"operation": "resolve", **params})
+    assert resolved["ok"] is True
+    assert resolved["skills"][0]["path"] == "portable/audit-review/SKILL.md"
+    locked = mcp_server.invoke("skills", {
+        "operation": "fetch_locked", "workspace_root": str(workspace),
+        "task": "review-task", "domain": "audit",
+    })
+    assert locked["skills"][0]["sha256"] == resolved["skills"][0]["sha256"]
+
+    fetch = {
+        "operation": "resource", "workspace_root": str(workspace),
+        "task": "review-task", "domain": "audit", "rel": "references/receipts.md",
+    }
+    first = mcp_server.invoke("skills", fetch)
+    assert first["ok"] and first["content"] == "receipt verification baseline"
+    reference.write_text("changed after task lock", encoding="utf-8")
+    second = mcp_server.invoke("skills", fetch)
+    assert second["content"] == first["content"]
+    assert second["sha256"] == first["sha256"]
+    assert second["executable"] is False
+    skill.unlink()
+    reference.unlink()
+    third = mcp_server.invoke("skills", fetch)
+    assert third["ok"] is True
+    assert third["content"] == first["content"]
+    assert third["sha256"] == first["sha256"]
+    bad = mcp_server.invoke("skills", {**fetch, "rel": "../outside.txt"})
+    assert bad["ok"] is False
+    assert "relative" in bad["message"] or "escapes" in bad["message"]
+
+    another = mcp_server.invoke("skills", {
+        "operation": "resolve", **{**params, "query": "different query"},
+    })
+    assert another["source"] == "task-lock"
+    assert another["skills"][0]["sha256"] == locked["skills"][0]["sha256"]
+
+
+def test_local_projects_prefers_live_registered_root_and_flags_stale_mapping(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    source = tmp_path / "knowledge"
+    source.mkdir()
+    mapping = source / "projects.json"
+    mapped = tmp_path / "old-missing"
+    live = tmp_path / "live"
+    live.mkdir()
+    mapping.write_text(
+        json.dumps({"projects": {"brew": {"local_path": str(mapped)}}}),
+        encoding="utf-8-sig",
+    )
+    registered = SimpleNamespace(
+        name="brew", path=str(live), root_class="workspace", enabled=True,
+    )
+    monkeypatch.setattr(mcp_server, "_load_ctx", lambda: SimpleNamespace(roots=[registered]))
+    monkeypatch.setattr(mcp_server, "_gpt_knowledge_root", lambda ctx: source)
+    monkeypatch.setattr(mcp_server, "_LOCAL_PROJECTS_RELPATH", "projects.json")
+    result = mcp_server.local_projects("brew")
+    assert result["ok"] is True
+    current = result["projects"]["brew"]
+    assert current["local_path"] == str(live)
+    assert current["exists"] is True
+    assert current["mapped_local_path"] == str(mapped)
+    assert current["mapping_drift"] is True
+    assert current["resolution_source"] == "registered_live_workspace"
+    assert json.loads(mapping.read_text(encoding="utf-8-sig"))["projects"]["brew"]["local_path"] == str(mapped)

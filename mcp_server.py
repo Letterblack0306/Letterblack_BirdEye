@@ -49,9 +49,10 @@ except (OSError, ValueError, TypeError):
 SKILLS_ROOT = Path(
     os.environ.get("SKILLS_ROOT", _EYE_SKILLS_PATH or "C:/MCP Local/Skills/curated")
 ).resolve()
+BIRDEYE_MCP_INSTRUCTIONS = "BirdEye is the user's shared local MCP gateway for current workspace evidence, governed commands with receipts, historical Memory, Skills, and GPT-Knowledge.\nFor tasks involving the user's local files, repositories, workspaces, history, or commands, discover and use BirdEye tools instead of asking the user to paste or execute what BirdEye can access.\nAlways supply a registered workspace ID or existing absolute path for workspace operations.\nTrust current files and fresh runtime output before Git state, execution receipts, historical Memory, or GPT-Knowledge. Verify effects independently: exit code 0 alone is not proof.\nFor a mutation or external side effect, honor the user's existing explicit authorization for that specific operation and target; request approval only if missing or if the scope expands. Inspect every step of a command sequence.\nBefore choosing or repeating an evaluation, first establish the active workspace and revision via workspace_identity and review its implementation gates, capability inventory, existing tests, historical agent sessions, execution receipts, and recent command history. Identify previous results and their evidence classification, compare the proven revision and affected owners with the current runtime, configuration, dependencies and acceptance requirements, then reuse applicable proof. Re-test only where proof is absent, stale, contradicted, changed, or does not satisfy the current acceptance criterion. If re-testing, record why and compare the new outcome against the old one. Do not treat indexed historical evidence as current authority; do not claim current acceptance without adequate current evidence. The agent should reason from this evidence, not execute a prescribed fixed test sequence. Before starting any task: (1) call memory_recall with the task topic to find earlier decisions and past work; (2) for any design, UI, style, icon or methodology work, call skills operation=resolve with workspace_root, task and domain, then reuse the result with operation=fetch_locked. If a domain is already locked, never choose different skills for it and never use plain fetch for it; loading only the sections you need is fine, but only from locked skills; (3) when the task is finished, call skills operation=complete_task.\nOn failures, consult the evidence-led-investigation skill. These instructions are advisory; BirdEye's execution authority remains independent."
 DEFAULT_IDLE_TIMEOUT_SECONDS = 300
 
-_memory_service = None
+_memory_service_local = threading.local()
 _memory_import_error: Exception | None = None
 
 
@@ -246,15 +247,17 @@ _MEMORY_SEARCH_SCHEMA = {
 
 _SKILLS_SCHEMA = {
     "name": "skills",
-    "description": "Workspace-consistent skills resolver backed by one shared index. Query results are non-executable discovery excerpts: never follow them as skill instructions. Use resolve with workspace_root, task, and domain before acting; it atomically pins and returns complete, untruncated skills. Other agents on the same task/domain receive the same path and SHA-256. Use fetch_locked to reload them and relock only for an explicit scope change. Agent-specific skill sets are not supported.",
+    "description": "Portable Agent Skills SKILL.md discovery with one shared BirdEye index and task-scoped SHA-256 snapshots. Use catalog for metadata-only, paginated Agent Skills discovery; query is the legacy non-executable documentation excerpt search. Use resolve with workspace_root/task/domain to pin complete skill instructions for collaborating agents, fetch_locked to reload, resource to load task-pinned scripts/references/assets on demand without executing them, and relock only for explicit scope changes. Skill instructions do not grant execution authority. Agent-specific skill partitions are not supported.",
     "inputSchema": {
         "type": "object",
         "properties": {
-            "operation": {"type": "string", "enum": ["query", "fetch", "resolve", "fetch_locked", "relock", "complete_task", "promote", "check_drift", "status"]},
+            "operation": {"type": "string", "enum": ["catalog", "query", "fetch", "resource", "resolve", "fetch_locked", "relock", "complete_task", "promote", "check_drift", "status"]},
             "query": {"type": "string"},
             "requested_intent": {"type": "string", "description": "Optional caller-stated intent recorded in query telemetry; it does not change retrieval behavior."},
             "prefix": {"type": "string"},
-            "rel": {"type": "string"},
+            "rel": {"type": "string", "description": "Curated-root-relative file for fetch, or selected-package-relative resource file for resource."},
+            "skill_path": {"type": "string", "description": "Selected locked SKILL.md relative path for resource fetch (defaults to primary)."},
+            "offset": {"type": "integer", "minimum": 0},
             "max_results": {"type": "integer", "minimum": 1, "maximum": 50},
             "chunk_chars": {"type": "integer", "minimum": 200, "maximum": 12000},
             "max_bytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
@@ -473,23 +476,39 @@ def local_projects(project: str | None = None) -> dict[str, Any]:
     mapping_file = _gpt_knowledge_root(ctx) / _LOCAL_PROJECTS_RELPATH.replace("/", os.sep)
     if not mapping_file.is_file():
         return {"ok": False, "error": "MAPPING_NOT_FOUND", "message": str(mapping_file)}
-    data = json.loads(mapping_file.read_text(encoding="utf-8"))
+    data = json.loads(mapping_file.read_text(encoding="utf-8-sig"))
     projects = data.get("projects", {})
     wanted = {project} if project else set(projects)
     unknown = sorted(wanted - set(projects))
     resolved = {}
+    configured = {
+        root.name: Path(str(root.path)).resolve()
+        for root in getattr(ctx, "roots", ())
+        if getattr(root, "root_class", None) == "workspace"
+        and bool(getattr(root, "enabled", False))
+    }
     for pid in sorted(wanted & set(projects)):
         raw = projects[pid].get("local_path", "")
-        path = Path(raw)
+        mapped_path = Path(raw)
+        current_root = configured.get(pid)
+        # A registered live workspace is stronger than a historical
+        # machine-local mapping. Surface the discrepancy; never silently
+        # claim an absent GPT-K path is reachable or rewrite a dirty repo.
+        drift = bool(current_root and current_root.is_dir()
+                     and current_root != mapped_path.resolve())
+        effective = current_root if drift else mapped_path
         resolved[pid] = {
-            "local_path": raw,
-            "exists": path.is_dir(),
+            "local_path": str(current_root) if drift else raw,
+            "exists": effective.is_dir(),
             "root_class": "workspace",
+            "resolution_source": "registered_live_workspace" if drift else "gpt_knowledge_mapping",
+            "mapping_drift": drift,
+            "mapped_local_path": raw,
         }
     return {
         "ok": True,
         "source": "GPT-Knowledge:" + _LOCAL_PROJECTS_RELPATH,
-        "authority": "current_workspace_mapping",
+        "authority": "live_workspace_verified_with_mapping_provenance",
         "unknown_project_ids": unknown,
         "projects": resolved,
     }
@@ -509,7 +528,24 @@ _BIRDEYE_VERIFY_HASH_SCHEMA = {
     },
 }
 
+_CHATGPT_SHARE_EXTRACT_SCHEMA = {
+    "name": "chatgpt_share_extract",
+    "description": "Extract actual user/assistant messages from a public ChatGPT share URL; excludes internal tool/system nodes and reports historical provenance. Optional save stores full conversation in BirdEye local state.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "Exact https://chatgpt.com/share/<uuid> link."},
+            "max_messages": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 100},
+            "save": {"type": "boolean", "default": False},
+        },
+        "required": ["url"],
+        "additionalProperties": False,
+    },
+}
+
+
 _TOOL_DEFINITIONS = [
+    _CHATGPT_SHARE_EXTRACT_SCHEMA,
     _KNOWLEDGE_ROUTE_SCHEMA,
     _KNOWLEDGE_READ_SCHEMA,
     _BIRDEYE_SEARCH_SCHEMA,
@@ -534,9 +570,20 @@ _TOOL_DEFINITIONS = [
     _WORKSPACE_COMMAND_HISTORY_SCHEMA,
     _REVISION_STATUS_SCHEMA,
     _LOCAL_PROJECTS_SCHEMA,
+    {"name": "llm_status", "description": "Check the BirdEye managed FreeLLMAPI gateway.",
+     "inputSchema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "llm_models", "description": "List model IDs available through FreeLLMAPI.",
+     "inputSchema": {"type": "object", "properties": {
+         "limit": {"type": "integer", "minimum": 1, "maximum": 200}}, "required": []}},
+    {"name": "llm_generate", "description": "Generate short text through the managed FreeLLMAPI router.",
+     "inputSchema": {"type": "object", "properties": {
+         "prompt": {"type": "string"}, "model": {"type": "string", "default": "auto"},
+         "max_tokens": {"type": "integer", "minimum": 1, "maximum": 4096}},
+         "required": ["prompt"]}},
 ]
 
 _TOOL_REGISTRY = {
+    "chatgpt_share_extract": ("url", "max_messages", "save"),
     "knowledge_route": ("task",),
     "knowledge_read": ("reference",),
     "birdeye_search": ("query", "max_results", "extensions", "roots", "path_prefix", "verify_freshness"),
@@ -561,6 +608,9 @@ _TOOL_REGISTRY = {
     "workspace_command_history": ("limit", "workspace"),
     "revision_status": ("workspace",),
     "local_projects": ("project",),
+    "llm_status": (),
+    "llm_models": ("limit",),
+    "llm_generate": ("prompt", "model", "max_tokens"),
 }
 
 
@@ -621,18 +671,19 @@ def _load_ctx() -> "Context":
 
 
 def _load_memory_service():
-    global _memory_service
-    if _memory_service is not None:
-        return _memory_service
+    service = getattr(_memory_service_local, "service", None)
+    if service is not None:
+        return service
     if MemoryService is None:
         detail = str(_memory_import_error) if _memory_import_error else "MemoryService import unavailable"
         raise GovernanceError(f"shared Memory service unavailable: {detail}")
-    _memory_service = MemoryService(
+    service = MemoryService(
         canonical_db=str(MEMORY_ROOT / "memory.db"),
         semantic_db=str(MEMORY_QUERY_INDEX if MEMORY_QUERY_INDEX.exists() else SHARED_VECTOR_INDEX),
         derived_db=str(MEMORY_ROOT / "derived.db"),
     )
-    return _memory_service
+    _memory_service_local.service = service
+    return service
 
 
 def _memory_call(method: str, **params: Any) -> dict[str, Any]:
@@ -647,6 +698,20 @@ def _skills_call(**params: Any) -> dict[str, Any]:
     operation = str(params.get("operation", "query"))
     if any(key in params for key in ("agent", "agent_id", "skill_set", "pinned_skills")):
         raise GovernanceError("agent-specific skill sets are not supported")
+    if operation == "catalog":
+        return _skills_catalog(
+            str(params.get("query", "")), str(params.get("prefix", "")),
+            int(params.get("max_results", 30)), int(params.get("offset", 0)),
+        )
+    if operation == "resource":
+        return _skills_locked_resource(
+            str(params.get("workspace_root", "")),
+            str(params.get("task", "")),
+            str(params.get("domain", "")),
+            str(params.get("rel", "")),
+            str(params.get("skill_path", "")),
+            int(params.get("max_bytes", 1048576)),
+        )
     if operation == "query":
         return _skills_query(
             str(params.get("query", "")),
@@ -991,6 +1056,90 @@ def _skills_fetch_locked(workspace_root: str, task: str, domain: str) -> dict[st
     }
 
 
+def _skills_locked_resource(
+    workspace_root: str, task: str, domain: str, rel: str, skill_path: str, max_bytes: int,
+) -> dict[str, Any]:
+    """Load a bundled Agent Skills resource on demand, pinned to its task lock.
+
+    Never execute scripts here. Every selected resource is snapshotted so other
+    agents working on this task receive identical bytes despite later edits.
+    """
+    import base64
+    if not 1 <= max_bytes <= 1048576:
+        raise GovernanceError("resource max_bytes must be between 1 and 1048576")
+    parts = rel.replace("\\\\", "/").split("/")
+    if (not rel.strip() or any(part in {"", ".", ".."} for part in parts)
+            or ":" in rel or rel.startswith(("/", "\\\\"))):
+        raise GovernanceError("resource must be a relative path within the locked skill directory")
+    workspace = _skills_workspace_root(workspace_root)
+    normalized_domain = _skills_domain(domain)
+    lock_path = _skills_lock_path(workspace, task)
+    with _skills_file_mutex(lock_path):
+        lock = _skills_read_lock(lock_path)
+        entries = (lock or {}).get("skills", {}).get(normalized_domain)
+        if not entries:
+            raise GovernanceError("task/domain has no locked skills; resolve first")
+        selected = next(
+            (entry for entry in entries if entry["path"] == skill_path),
+            None,
+        ) if skill_path else next(
+            (entry for entry in entries if entry["role"] == "primary"), None,
+        )
+        if not selected or Path(selected["path"]).name != "SKILL.md":
+            raise GovernanceError("resource requires an existing locked Agent Skills package")
+        # The skill instructions and previously loaded resources are pinned
+        # snapshots. A later source removal must not invalidate that task.
+        # Validate containment without requiring the original SKILL.md to exist.
+        selected_path = (SKILLS_ROOT / selected["path"].replace("\\", "/")).resolve()
+        try:
+            selected_path.relative_to(SKILLS_ROOT)
+        except ValueError as exc:
+            raise GovernanceError("locked skill source path escapes curated root") from exc
+        skill_dir = selected_path.parent
+        relative_resource = "/".join(parts)
+        key = selected["path"] + "::" + relative_resource
+        bindings = lock.setdefault("resource_snapshots", {}).setdefault(normalized_domain, {})
+        existing = bindings.get(key)
+        if existing:
+            snapshot = workspace / ".skills" / "snapshots" / (existing["sha256"] + ".md")
+            if not snapshot.is_file():
+                raise GovernanceError("locked resource snapshot missing")
+            data = snapshot.read_bytes()
+            if (len(data) != existing["bytes"]
+                    or hashlib.sha256(data).hexdigest() != existing["sha256"]):
+                raise GovernanceError("locked resource snapshot checksum mismatch")
+        else:
+            resource_path = (skill_dir / relative_resource).resolve()
+            try:
+                resource_path.relative_to(skill_dir)
+            except ValueError as exc:
+                raise GovernanceError("resource escapes the locked skill package") from exc
+            if not resource_path.is_file():
+                raise GovernanceError("locked skill resource does not exist")
+            if resource_path.stat().st_size > max_bytes:
+                raise GovernanceError("resource exceeds requested max_bytes; no partial content returned")
+            data = resource_path.read_bytes()
+            digest = _skills_snapshot(workspace, data)
+            bindings[key] = {"sha256": digest, "bytes": len(data)}
+            _skills_atomic_json(lock_path, lock)
+        if len(data) > max_bytes:
+            raise GovernanceError("locked resource exceeds requested max_bytes")
+    try:
+        content = data.decode("utf-8-sig")
+        encoding = "utf-8"
+    except UnicodeDecodeError:
+        content = base64.b64encode(data).decode("ascii")
+        encoding = "base64"
+    return {
+        "ok": True, "operation": "resource", "namespace": "skills",
+        "task": task, "domain": normalized_domain, "skill_path": selected["path"],
+        "path": relative_resource, "content": content, "encoding": encoding,
+        "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data),
+        "complete": True, "truncated": False, "executable": False,
+        "authority": "curated_knowledge_non_truth",
+    }
+
+
 def _skills_read_workspace_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
     if not path.is_file():
         return default
@@ -1023,7 +1172,12 @@ def _skills_candidates(workspace: Path, domain: str, query: str, prefix: str) ->
             add(str(entry.get("path", "")), "registry")
     discovered = _skills_query(query, prefix, 5, 1200, "task_skill_resolution")
     for item in discovered["results"]:
-        add(item["path"], "search")
+        path = item["path"]
+        if Path(path).name == "SKILL.md":
+            content = _skills_safe_path(path).read_text(encoding="utf-8-sig")
+            if _agent_skill_metadata(path, content) is None:
+                continue
+        add(path, "search")
     return found
 
 
@@ -1098,6 +1252,86 @@ def _skills_check_drift(workspace_root: str) -> dict[str, Any]:
                     drifted.append(f"{domain}:{entry['path']}")
         _skills_atomic_json(registry_path, registry)
     return {"ok": True, "operation": "check_drift", "drifted": drifted}
+
+
+def _agent_skill_metadata(rel: str, content: str) -> dict[str, str] | None:
+    """Expose portable Agent Skills metadata without interpreting its instructions.
+
+    Legacy non-SKILL.md resources are still indexed as documentation.
+    Invalid SKILL.md frontmatter must never be promoted to an active skill.
+    """
+    if Path(rel).name != "SKILL.md":
+        return None
+    lines = content.lstrip("\ufeff").splitlines()
+    if not lines or lines[0].strip() != "---":
+        return None
+    try:
+        end = lines.index("---", 1)
+    except ValueError:
+        return None
+    # Parse real YAML rather than approximating the standard with colon splits.
+    # A malformed or nonconforming skill stays discoverable as documentation,
+    # but must not be selected as an executable task skill.
+    try:
+        import yaml
+        parsed = yaml.safe_load("\n".join(lines[1:end]))
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    name = parsed.get("name")
+    description = parsed.get("description")
+    if (not isinstance(name, str) or not isinstance(description, str)
+        or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name)
+        or len(name) > 64 or Path(rel).parent.name != name
+        or not description.strip() or len(description) > 1024):
+        return None
+    compatibility = parsed.get("compatibility")
+    if compatibility is not None and (not isinstance(compatibility, str)
+                                      or not 1 <= len(compatibility) <= 500):
+        return None
+    metadata = parsed.get("metadata")
+    if metadata is not None and (not isinstance(metadata, dict)
+                                 or not all(isinstance(k, str) and isinstance(v, str)
+                                            for k, v in metadata.items())):
+        return None
+    return {"name": name, "description": description, "format": "agent-skills"}
+
+
+def _skills_catalog(query: str, prefix: str, max_results: int, offset: int) -> dict[str, Any]:
+    """Portable Agent Skills discovery: metadata only, never instruction bodies."""
+    if not 1 <= max_results <= 50 or offset < 0:
+        raise GovernanceError("catalog max_results must be 1..50 and offset non-negative")
+    _skills_refresh()
+    root_prefix = prefix.replace("\\\\", "/")
+    terms = [term for term in re.findall(r"[a-z0-9_-]+", query.lower()) if term]
+    conn = _skills_db()
+    try:
+        rows = conn.execute(
+            "SELECT rel_path, sha256 FROM skill_files WHERE namespace='skills' AND rel_path LIKE ? ORDER BY rel_path",
+            (root_prefix + "%",),
+        ).fetchall()
+    finally:
+        conn.close()
+    entries = []
+    for rel, digest in rows:
+        if Path(rel).name != "SKILL.md":
+            continue
+        metadata = _agent_skill_metadata(rel, _skills_safe_path(rel).read_text(encoding="utf-8-sig"))
+        if metadata is None:
+            continue
+        haystack = (rel + " " + metadata["name"] + " " + metadata["description"]).lower()
+        if terms and not all(term in haystack for term in terms):
+            continue
+        entries.append({"path": rel, "sha256": digest, **metadata})
+    matches = len(entries)
+    return {
+        "ok": True, "operation": "catalog", "namespace": "skills",
+        "format": "agent-skills", "discovery_only": True,
+        "results": entries[offset:offset+max_results],
+        "total": matches, "next_offset": offset + max_results if offset+max_results < matches else None,
+        "authority": "curated_knowledge_non_truth",
+    }
 
 
 def _skills_catalog_score(rel: str, text: str, terms: list[str]) -> int:
@@ -1182,7 +1416,10 @@ def _skills_query(
         "ok": True, "operation": "query", "namespace": "skills", "query": query,
         "results": [
             {"path": rel, "sha256": digest, "start_line": line, "score": score,
-             "discovery_excerpt": chunk, "section": chunk, "executable": False}
+             "discovery_excerpt": chunk, "section": chunk, "executable": False,
+             "skill_metadata": _agent_skill_metadata(rel, next(
+                 (text for file_path, _, text in loaded_rows if file_path == rel), ""
+             ))}
             for score, rel, digest, line, chunk in bounded_results
         ],
         "result_count": len(bounded_results),
@@ -1275,6 +1512,16 @@ def invoke(tool: str, params: dict[str, Any]) -> dict[str, Any]:
             "message": f"unknown tool: {tool}",
         }
     try:
+        if tool in {"llm_status", "llm_models", "llm_generate"}:
+            from llm_gateway_bridge import invoke_tool
+            return invoke_tool(tool, params)
+        if tool == "chatgpt_share_extract":
+            from chatgpt_share_extractor import extract_share
+            return extract_share(
+                params.get("url", ""),
+                max_messages=params.get("max_messages", 100),
+                save=bool(params.get("save", False)),
+            )
         if tool == "knowledge_route":
             return knowledge_route(params.get("task", ""))
         if tool == "knowledge_read":
@@ -1562,16 +1809,17 @@ def _retirement_gate() -> tuple[dict[str, bool], dict[str, Any]]:
     checks = {
         "authority_model": contract_doc.is_file(),
         "deterministic_rebuild": all(bool(domains.get(d, {}).get("rebuildable")) for d in domain_names),
-        "incremental_crud_rename": all(bool(domains.get(d, {}).get("journal_replayable")) for d in domain_names),
-        "hash_reuse": all(bool(domains.get(d, {}).get("rebuildable")) for d in domain_names),
-        "skills_projection_parity": bool(domains.get("skills", {}).get("journal_replayable")),
-        "crash_replay": all(bool(domains.get(d, {}).get("journal_replayable")) for d in domain_names),
+        # Health flags cannot prove these behavioral acceptance checks.
+        "incremental_crud_rename": False,
+        "hash_reuse": False,
+        "skills_projection_parity": False,
+        "crash_replay": False,
         "journal_replayable": all(bool(domains.get(d, {}).get("journal_replayable")) for d in domain_names),
         "generation_lag": bool(current.get("generation_lag_zero")),
-        "restart_recovery": all(bool(domains.get(d, {}).get("journal_replayable")) for d in domain_names),
-        "multi_agent_stability": (BIRDEYE_DIR / "state" / "birdeye-mcp.lock").exists(),
-        "full_regression": True,
-        "memory_projection_contract": bool(domains.get("memory", {}).get("journal_replayable")),
+        "restart_recovery": False,
+        "multi_agent_stability": False,
+        "full_regression": False,
+        "memory_projection_contract": False,
     }
     return checks, current
 
@@ -1580,6 +1828,18 @@ def eyes_retirement(activate: bool = False) -> dict[str, Any]:
     """Report or atomically apply the fail-closed EYES legacy retirement switch."""
     checks, current = _retirement_gate()
     gate_pass = all(checks.values())
+    unverified_checks = [name for name, passed in checks.items() if not passed]
+    required_evidence = {
+        "incremental_crud_rename": "Observe create, update, delete, and rename events reaching the query projection.",
+        "hash_reuse": "Show unchanged source bytes reuse the prior hash without a new full read.",
+        "skills_projection_parity": "Compare rebuilt skills query results with canonical skills data.",
+        "crash_replay": "Interrupt projection and verify ordered replay after restart.",
+        "restart_recovery": "Restart the live service and verify all three projections recover.",
+        "multi_agent_stability": "Exercise concurrent clients and verify consistent generations and receipts.",
+        "full_regression": "Complete the existing relevant regression suite and retain its result.",
+        "memory_projection_contract": "Compare rebuilt memory results with canonical memory records.",
+    }
+    next_checks = {name: required_evidence[name] for name in unverified_checks if name in required_evidence}
     marker = BIRDEYE_DIR / "state" / "eyes_legacy_retired.json"
     if activate and not gate_pass:
         return {
@@ -1587,6 +1847,9 @@ def eyes_retirement(activate: bool = False) -> dict[str, Any]:
             "activated": False,
             "error": "legacy retirement gate is not satisfied",
             "checks": checks,
+            "ready_to_retire": False,
+            "unverified_checks": unverified_checks,
+            "next_checks": next_checks,
             "health": current,
         }
     if activate:
@@ -1611,6 +1874,9 @@ def eyes_retirement(activate: bool = False) -> dict[str, Any]:
         "activated": activate and gate_pass,
         "legacy_authority": "retired" if activate and gate_pass else "compatibility-only",
         "checks": checks,
+        "ready_to_retire": gate_pass,
+        "unverified_checks": unverified_checks,
+        "next_checks": next_checks,
         "health": current,
     }
 
@@ -1716,6 +1982,7 @@ def serve_stdio() -> None:
                         "protocolVersion": "2024-11-05",
                         "capabilities": {"tools": {}},
                         "serverInfo": {"name": "birdeye", "version": "0.1.0"},
+                        "instructions": BIRDEYE_MCP_INSTRUCTIONS,
                     },
                 })
                 if not watcher_started:
@@ -1765,13 +2032,19 @@ def serve_stdio() -> None:
                 result = invoke(name, arguments)
                 is_error = _mcp_result_is_error(result)
                 if request_id is not None:
+                    image_data = result.get("_image_base64") if isinstance(result, dict) else None
+                    if image_data:
+                        public_result = {k: v for k, v in result.items() if k != "_image_base64"}
+                        content = [
+                            {"type": "text", "text": json.dumps(public_result, ensure_ascii=False)},
+                            {"type": "image", "data": image_data, "mimeType": "image/png"},
+                        ]
+                    else:
+                        content = _text_content(result)
                     _send({
                         "jsonrpc": "2.0",
                         "id": request_id,
-                        "result": {
-                            "content": ([{"type":"text","text":json.dumps({k:v for k,v in result.items() if k!="_image_base64"},ensure_ascii=False)},{"type":"image","data":result["_image_base64"],"mimeType":"image/png"}] if isinstance(result,dict) and result.get("_image_base64") else _text_content(result)),
-                            "isError": is_error,
-                        },
+                        "result": {"content": content, "isError": is_error},
                     })
                 continue
 
@@ -1784,11 +2057,12 @@ def serve_stdio() -> None:
     finally:
         stop_watcher(watcher)
         process_lease.release()
-        if _memory_service is not None:
+        service = getattr(_memory_service_local, "service", None)
+        if service is not None:
             try:
-                _memory_service.close()
+                service.close()
             finally:
-                globals()["_memory_service"] = None
+                delattr(_memory_service_local, "service")
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="BirdEye MCP surface (native stdio transport; --args diagnostic harness)")

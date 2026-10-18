@@ -56,6 +56,7 @@ def _fake_ctx(config_path: Path):
 
 def test_workspace_identity_read_only(tmp_path, monkeypatch):
     config = _config(tmp_path)
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
     monkeypatch.setattr("agent.Context.load", lambda: _fake_ctx(config))
     result = workspace_identity("demo")
     assert result["workspace_id"] == "demo"
@@ -65,6 +66,7 @@ def test_workspace_identity_read_only(tmp_path, monkeypatch):
 
 def test_revision_status_read_only(tmp_path, monkeypatch):
     config = _config(tmp_path)
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
     monkeypatch.setattr("agent.Context.load", lambda: _fake_ctx(config))
     result = revision_status("demo")
     assert result["workspace_id"] == "demo"
@@ -151,7 +153,7 @@ def test_run_command_uses_shell_false(tmp_path, monkeypatch):
 def test_diagnostic_git_allowed():
     allowed, reason = _command_allowed(("git", "status", "--short"), Path("."))
     assert allowed is True
-    assert "git" in reason
+    assert "generic" in reason.lower()
 
 
 def test_git_push_is_transport_allowed_and_mutating():
@@ -198,7 +200,8 @@ def test_run_command_allows_absolute_argument_paths(tmp_path, monkeypatch):
     captured = {}
 
     def fake_run(args, *, cwd, shell, **kwargs):
-        captured["args"] = args
+        if args[0] != "git":
+            captured["args"] = args
         return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr("workspace_bridge.subprocess.run", fake_run)
@@ -434,7 +437,8 @@ def test_generic_execution_runs_without_secondary_capability_gate(tmp_path, monk
     captured = {}
 
     def fake_run(args, *, cwd, shell, **kwargs):
-        captured["args"] = args
+        if args[0] != "git":
+            captured["args"] = args
         captured["cwd"] = str(cwd)
         captured["shell"] = shell
         return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
@@ -453,7 +457,8 @@ def test_absolute_executable_path_runs_without_secondary_gate(tmp_path, monkeypa
     captured = {}
 
     def fake_run(args, *, cwd, shell, **kwargs):
-        captured["args"] = args
+        if args[0] != "git":
+            captured["args"] = args
         return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr("workspace_bridge.subprocess.run", fake_run)
@@ -467,8 +472,9 @@ def test_git_push_reaches_execution_without_secondary_capability_gate(tmp_path, 
     config = _config(tmp_path)
     captured = {}
 
-    def fake_run(args, *, cwd, shell, **kwargs):
-        captured["args"] = args
+    def fake_run(args, *, cwd=None, shell=False, **kwargs):
+        if args == ["git", "push", "origin", "main"]:
+            captured["args"] = args
         return type("CP", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr("workspace_bridge.subprocess.run", fake_run)
@@ -476,3 +482,9 @@ def test_git_push_reaches_execution_without_secondary_capability_gate(tmp_path, 
     assert result["ok"] is True
     assert captured["args"] == ["git", "push", "origin", "main"]
     assert result["authority"]["mutation"] is True
+
+def test_birdeye_windows_subprocess_launches_are_hidden():
+    from pathlib import Path
+    source = (Path(__file__).resolve().parents[1] / "workspace_bridge.py").read_text(encoding="utf-8")
+    assert source.count("creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0") == 2
+

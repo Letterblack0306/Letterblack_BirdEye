@@ -8,6 +8,9 @@ import sys
 from typing import Any
 
 import mcp_server as bird
+import loop_mcp_server as loops
+import app_gateway
+import llm_gateway_bridge
 
 
 SERVER_NAME = "letterblack-birdeye"
@@ -34,7 +37,15 @@ def _configured_host_port() -> tuple[str, int]:
 
 
 def _tool_definitions() -> list[dict[str, Any]]:
-    return list(bird._TOOL_DEFINITIONS)
+    return list(bird._TOOL_DEFINITIONS) + [
+        tool for tool in loops._LOOP_TOOLS if tool["name"].startswith("loop_")
+    ]
+
+
+def _invoke_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    if name in loops._LOOP_NAMES and name.startswith("loop_"):
+        return loops.invoke(name, arguments)
+    return bird.invoke(name, arguments)
 
 
 def _tool_names() -> list[str]:
@@ -47,6 +58,22 @@ def _text_content(value: dict[str, Any]) -> list[dict[str, str]]:
 
 def _is_error(result: dict[str, Any]) -> bool:
     return result.get("ok") is False
+
+
+def _close_legacy_memory_service() -> None:
+    """Close only the legacy process-scoped memory service when one exists.
+
+    Current memory access is thread-local in ``mcp_server``. Older runtimes
+    exposed a module-level service, so shutdown must remain compatible without
+    assuming that legacy attribute still exists.
+    """
+    memory_service = getattr(bird, "_memory_service", None)
+    if memory_service is None:
+        return
+    try:
+        memory_service.close()
+    finally:
+        bird._memory_service = None
 
 
 def build_app():
@@ -69,15 +96,22 @@ def build_app():
     async def on_call_tool(ctx, params):
         name = str(params.name)
         arguments = dict(params.arguments or {})
-        result = await asyncio.to_thread(bird.invoke, name, arguments)
-        return types.CallToolResult(
-            content=[types.TextContent(type="text", text=_text_content(result)[0]["text"])],
-            isError=_is_error(result),
-        )
+        result = await asyncio.to_thread(_invoke_tool, name, arguments)
+        image_data = result.get("_image_base64") if isinstance(result, dict) else None
+        if image_data:
+            metadata = {key: value for key, value in result.items() if key != "_image_base64"}
+            content = [
+                types.TextContent(type="text", text=json.dumps(metadata, ensure_ascii=False)),
+                types.ImageContent(type="image", data=image_data, mimeType="image/png"),
+            ]
+        else:
+            content = [types.TextContent(type="text", text=_text_content(result)[0]["text"])]
+        return types.CallToolResult(content=content, isError=_is_error(result))
 
     server = Server(
         SERVER_NAME,
         version="1.0",
+        instructions=bird.BIRDEYE_MCP_INSTRUCTIONS,
         on_list_tools=on_list_tools,
         on_call_tool=on_call_tool,
     )
@@ -97,6 +131,8 @@ def build_app():
         )
 
     app.router.add_route("/health", health, methods=["GET"])
+    app_gateway.register_routes(app)
+    llm_gateway_bridge.register_routes(app)
 
     token = os.environ.get("BIRDEYE_HTTP_TOKEN", "")
     if not token:
@@ -108,7 +144,9 @@ def build_app():
             self.token = bearer
 
         async def __call__(self, scope, receive, send):
-            if scope["type"] != "http" or scope.get("path") == "/health":
+            path = scope.get("path") or ""
+            if (scope["type"] != "http" or path in {"/health", "/", "/api/ping", "/v1", "/v1beta"}
+                    or path.startswith(("/apps/", "/v1/", "/v1beta/"))):
                 await self.app(scope, receive, send)
                 return
             headers = dict(scope.get("headers") or [])
@@ -134,6 +172,7 @@ async def run() -> None:
         ) from exc
 
     watcher = None
+    gateway = llm_gateway_bridge.ManagedGateway()
     process_lease = bird._McpProcessLease()
     try:
         if not process_lease.acquire():
@@ -152,6 +191,13 @@ async def run() -> None:
                 flush=True,
             )
 
+        try:
+            gateway.start()
+            if not await gateway.wait_ready():
+                print("[birdeye-http] FreeLLMAPI did not become ready", file=sys.stderr, flush=True)
+        except (OSError, RuntimeError) as exc:
+            print(f"[birdeye-http] FreeLLMAPI unavailable: {exc}", file=sys.stderr, flush=True)
+
         app = build_app()
         print(
             f"[birdeye-http] listening http://{host}:{port}{MCP_PATH} "
@@ -163,13 +209,10 @@ async def run() -> None:
             uvicorn.Config(app, host=host, port=port, log_level="warning")
         ).serve()
     finally:
+        gateway.stop()
         bird.stop_watcher(watcher)
         process_lease.release()
-        if bird._memory_service is not None:
-            try:
-                bird._memory_service.close()
-            finally:
-                bird._memory_service = None
+        _close_legacy_memory_service()
 
 
 def main() -> int:

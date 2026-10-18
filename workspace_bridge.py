@@ -91,7 +91,7 @@ def load_request_from_comment(comment: str) -> DiagnosticRequest:
 
 def load_request_file(path: Path) -> DiagnosticRequest:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError as exc:
         raise BridgeError(f"Request file does not exist: {path}") from exc
     except json.JSONDecodeError as exc:
@@ -103,7 +103,7 @@ def load_request_file(path: Path) -> DiagnosticRequest:
 
 def load_workspaces(config_path: Path) -> tuple[Workspace, ...]:
     try:
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config = json.loads(config_path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError as exc:
         raise BridgeError(f"BirdEye config not found: {config_path}") from exc
     except json.JSONDecodeError as exc:
@@ -254,6 +254,7 @@ def execute(request: DiagnosticRequest, config_path: Path) -> dict[str, Any]:
             errors="replace",
             timeout=request.timeout_seconds,
             env=env,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
         )
         exit_code: int | None = completed.returncode
         stdout = completed.stdout
@@ -507,6 +508,7 @@ def _git_head(workspace_path: Path) -> tuple[str | None, bool]:
             errors="replace",
             timeout=30,
             shell=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (subprocess.TimeoutExpired, OSError):
         return None, False
@@ -520,7 +522,7 @@ def _load_project_scripts(workspace_path: Path) -> dict[str, list[str]]:
     package_json = workspace_path / "package.json"
     if package_json.is_file():
         try:
-            data = json.loads(package_json.read_text(encoding="utf-8"))
+            data = json.loads(package_json.read_text(encoding="utf-8-sig"))
             raw = data.get("scripts", {})
             if isinstance(raw, dict):
                 scripts = {k: ["npm.cmd", "run", k] for k in raw.keys() if isinstance(k, str)}
@@ -565,10 +567,12 @@ def _is_read_only_command(argv: tuple[str, ...]) -> bool:
 
 def _journal_path(config_path: Path) -> Path:
     try:
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config = json.loads(config_path.read_text(encoding="utf-8-sig"))
         state_dir = Path(config.get("state_dir", "state"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         state_dir = Path("state")
+    if not state_dir.is_absolute():
+        state_dir = config_path.resolve().parent / state_dir
     return state_dir / "workspace_journal.jsonl"
 
 
@@ -652,7 +656,7 @@ def _failure_class(result: dict[str, Any]) -> str | None:
 
 def _load_circuits(config_path: Path) -> dict[str, dict[str, Any]]:
     try:
-        value = json.loads(_circuit_path(config_path).read_text(encoding="utf-8"))
+        value = json.loads(_circuit_path(config_path).read_text(encoding="utf-8-sig"))
         return value if isinstance(value, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
@@ -773,12 +777,14 @@ def _execute_argv(
             list(argv),
             cwd=str(workspace.path),
             shell=False,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             timeout=timeout_seconds,
             env=env,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
         )
         exit_code: int | None = completed.returncode
         stdout = completed.stdout

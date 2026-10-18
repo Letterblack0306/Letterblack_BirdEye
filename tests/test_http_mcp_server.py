@@ -40,7 +40,9 @@ class BirdEyeHttpTransportTests(unittest.TestCase):
 
     def test_transport_reuses_full_birdeye_registry(self):
         expected = [tool["name"] for tool in bird._TOOL_DEFINITIONS]
-        self.assertEqual(self.mod._tool_names(), expected)
+        self.assertEqual(self.mod._tool_names()[:len(expected)], expected)
+        self.assertIn("loop_list", self.mod._tool_names())
+        self.assertTrue(self.mod._invoke_tool("loop_list", {})["ok"])
         self.assertIn("birdeye_status", expected)
         self.assertIn("birdeye_roots", expected)
         self.assertIn("memory_recall", expected)
@@ -71,6 +73,18 @@ class BirdEyeHttpTransportTests(unittest.TestCase):
         result = bird.invoke("definitely-not-a-birdeye-tool", {})
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "unknown tool")
+
+    def test_legacy_memory_cleanup_allows_thread_local_runtime(self):
+        sentinel = object()
+        had_legacy_attribute = hasattr(bird, "_memory_service")
+        original = getattr(bird, "_memory_service", sentinel)
+        try:
+            if had_legacy_attribute:
+                delattr(bird, "_memory_service")
+            self.mod._close_legacy_memory_service()
+        finally:
+            if had_legacy_attribute:
+                bird._memory_service = original
 
 
 if __name__ == "__main__":

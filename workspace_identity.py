@@ -72,6 +72,7 @@ def _git(path: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
         timeout=_GIT_TIMEOUT_SECONDS,
         shell=False,
         check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     if check and process.returncode != 0:
         message = process.stderr.strip() or process.stdout.strip() or "git command failed"

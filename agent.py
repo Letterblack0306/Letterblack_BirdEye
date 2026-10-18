@@ -37,7 +37,7 @@ STATE_FILE_SCHEMA_VERSION = 1
 def legacy_storage_retired() -> bool:
     """Return whether the persisted EYES retirement switch is active."""
     try:
-        value = json.loads(LEGACY_RETIREMENT_PATH.read_text(encoding="utf-8"))
+        value = json.loads(LEGACY_RETIREMENT_PATH.read_text(encoding="utf-8-sig"))
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         return False
     return isinstance(value, dict) and value.get("retired") is True
@@ -112,7 +112,7 @@ def load_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Missing required file: {path}")
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"Invalid JSON in {path}: {exc}") from exc
     if not isinstance(value, dict):
@@ -1153,6 +1153,8 @@ def inspect_file(ctx: Context, value: str, start_line: int | None = None, end_li
         "path": virtual,
         "size": len(data),
         "sha256": full_sha256,
+        "evidence_class": "LIVE_FILE_READ",
+        "observed_at": utc_now(),
         "content": content,
     }
     if returned_range is not None:
@@ -1270,7 +1272,7 @@ def search_workspace(
         scanned = skipped = serial = 0
         candidates: list[tuple[int, int, dict[str, Any]]] = []
 
-        sql = "SELECT root,path,physical_path,size,modified_ns,sha256,content,hash_status FROM files"
+        sql = "SELECT root,path,physical_path,size,modified_ns,sha256,content,hash_status,last_seen_at FROM files"
         parameters: list[Any] = []
         conditions: list[str] = []
         if selected_roots:
@@ -1308,6 +1310,7 @@ def search_workspace(
             content = row["content"] or ""
             content_lower = ""
             version_status = "indexed"
+            observed_at = row["last_seen_at"]
             row_sha256 = row["sha256"]
             content_status = "cached" if row["content"] is not None else "not_cached"
             if verify_freshness and size <= max_bytes:
@@ -1330,9 +1333,11 @@ def search_workspace(
                         row_sha256 = refreshed_hash
                         content_status = "cached"
                         version_status = "refreshed"
+                        observed_at = utc_now()
                     else:
                         row_sha256 = row["sha256"]
                         version_status = "verified"
+                        observed_at = utc_now()
                     content_lower = content.lower()
                 except (OSError, PermissionError):
                     skipped += 1
@@ -1404,6 +1409,8 @@ def search_workspace(
                 "snippet": snippet,
                 "sha256": row_sha256,
                 "version_status": version_status,
+                "evidence_class": "LIVE_FILE_VERIFIED" if version_status in {"verified", "refreshed"} else "INDEXED_SNAPSHOT",
+                "observed_at": observed_at,
                 "content_status": content_status,
                 "matched_terms": matched,
                 "exact_phrase": exact_path or exact_content,
@@ -1527,6 +1534,8 @@ def database_status() -> dict[str, Any]:
                 """
                 SELECT COUNT(*) AS indexed_files,
                        COALESCE(SUM(CASE WHEN sha256 IS NOT NULL THEN 1 ELSE 0 END), 0) AS hashed_files,
+                       COALESCE(SUM(CASE WHEN hash_status='too_large' THEN 1 ELSE 0 END), 0) AS size_limited_files,
+                       COALESCE(SUM(CASE WHEN hash_status='unreadable' THEN 1 ELSE 0 END), 0) AS unreadable_files,
                        COALESCE(SUM(CASE WHEN hash_status IN ('too_large', 'unreadable') THEN 1 ELSE 0 END), 0) AS unresolved_files
                 FROM files WHERE root=?
                 """,
@@ -1536,6 +1545,12 @@ def database_status() -> dict[str, Any]:
                 "SELECT * FROM root_runs WHERE root=? ORDER BY started_at DESC LIMIT 1",
                 (root.name,),
             ).fetchone()
+            unresolved_examples = [dict(row) for row in connection.execute(
+                "SELECT path, size, hash_status, error FROM files "
+                "WHERE root=? AND hash_status IN ('too_large', 'unreadable') "
+                "ORDER BY hash_status, path LIMIT 10",
+                (root.name,),
+            )]
             if not root.enabled or not root.index_enabled:
                 root_status = "EXCLUDED"
             elif not root.path.exists() or not root.path.is_dir():
@@ -1565,6 +1580,14 @@ def database_status() -> dict[str, Any]:
                 "indexed_files": int(counts["indexed_files"] or 0),
                 "hashed_files": int(counts["hashed_files"] or 0),
                 "unresolved_files": int(counts["unresolved_files"] or 0),
+                "size_limited_files": int(counts["size_limited_files"] or 0),
+                "unreadable_files": int(counts["unreadable_files"] or 0),
+                "unresolved_examples": unresolved_examples,
+                "next_action": (
+                    "Check file access and rerun indexing" if counts["unreadable_files"]
+                    else "Use birdeye_verify_hash with a known expected SHA-256, or review the index size limit" if counts["size_limited_files"]
+                    else None
+                ),
                 "last_started_at": latest["started_at"] if latest else None,
                 "last_completed_at": latest["completed_at"] if latest else None,
                 "last_run_status": latest["status"] if latest else None,

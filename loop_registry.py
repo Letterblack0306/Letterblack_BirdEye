@@ -35,7 +35,7 @@ class LoopRegistry:
         if not self.path.is_file():
             return self._empty()
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            data = json.loads(self.path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError, TypeError):
             return self._empty()
         if not isinstance(data, dict) or not isinstance(data.get("loops"), dict):
