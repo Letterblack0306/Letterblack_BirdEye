@@ -544,7 +544,10 @@ _CHATGPT_SHARE_EXTRACT_SCHEMA = {
 }
 
 
+from browser_mcp import SCHEMA as _BROWSER_ACTION_SCHEMA
+
 _TOOL_DEFINITIONS = [
+    _BROWSER_ACTION_SCHEMA,
     _CHATGPT_SHARE_EXTRACT_SCHEMA,
     _KNOWLEDGE_ROUTE_SCHEMA,
     _KNOWLEDGE_READ_SCHEMA,
@@ -583,6 +586,7 @@ _TOOL_DEFINITIONS = [
 ]
 
 _TOOL_REGISTRY = {
+    "browser_action": tuple(_BROWSER_ACTION_SCHEMA["inputSchema"]["properties"]),
     "chatgpt_share_extract": ("url", "max_messages", "save"),
     "knowledge_route": ("task",),
     "knowledge_read": ("reference",),
@@ -1668,6 +1672,9 @@ def invoke(tool: str, params: dict[str, Any]) -> dict[str, Any]:
                 finally:
                     capture_path.unlink(missing_ok=True)
             return result
+        if tool == "browser_action":
+            from browser_mcp import invoke as browser_invoke
+            return browser_invoke(params, sys.modules[__name__])
         if tool == "workspace_run":
             request = RunRequest.from_mapping(params)
             return run_command(request, CONFIG_PATH)
