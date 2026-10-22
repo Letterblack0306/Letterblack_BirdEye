@@ -428,7 +428,7 @@ _WORKSPACE_RUN_SEQUENCE_SCHEMA = {
             "request_id": {"type": "string"},
             "task_id": {"type": "string"},
             "intent": {"type": "string"},
-            "capability": {"type": "string", "description": "Runtime capability. Mutations require workspace.mutate."},
+            "capability": {"type": "string", "description": "Optional backward-compatible capability metadata recorded in the receipt; it does not gate execution."},
             "context_evidence": {"type": "object"},
         },
         "required": ["workspace", "commands"],
