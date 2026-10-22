@@ -6,33 +6,54 @@
   "tokenEnv": "BIRDEYE_GITHUB_TOKEN",
   "workspaces": {
     "access-browser-agent": {
-      "root": "G:\\Developments\\46_Accecc_Browser_Agent",
+      "root": "D:\\Developement\\_Brwoser_agent\\Browser_Agent",
       "database": "C:\\MCP Local\\Letterblack_BirdEye\\state\\workspace.db",
       "validationProfiles": {
         "default": [
-          ["npm.cmd", "run", "check"]
+          [
+            "npm.cmd",
+            "run",
+            "check"
+          ]
         ],
         "audit": [
-          ["npm.cmd", "run", "check"],
-          ["npm.cmd", "run", "audit:full"]
+          [
+            "npm.cmd",
+            "run",
+            "check"
+          ],
+          [
+            "npm.cmd",
+            "run",
+            "audit:full"
+          ]
         ]
       },
       "artifactRoots": {
         "browser-screenshots": {
           "enabled": false,
           "path": "",
-          "patterns": ["*.png", "*.jpg", "*.jpeg", "*.webp"],
+          "patterns": [
+            "*.png",
+            "*.jpg",
+            "*.jpeg",
+            "*.webp"
+          ],
           "maxFileBytes": 10485760,
           "publish": false
         }
       }
     },
     "brew": {
-      "root": "G:\\Developments\\38_Brew_Creative_Agent",
+      "root": "D:\\Developement\\_Brew_V02\\Brew_Rebuild",
       "database": "C:\\MCP Local\\Letterblack_BirdEye\\state\\workspace.db",
       "validationProfiles": {
         "default": [
-          ["npm.cmd", "run", "check"]
+          [
+            "npm.cmd",
+            "run",
+            "check"
+          ]
         ]
       }
     }
@@ -44,7 +65,10 @@
     "sources": {
       "codex": {
         "root": "%USERPROFILE%\\.codex",
-        "patterns": ["sessions/**/*.jsonl", "history.jsonl"]
+        "patterns": [
+          "sessions/**/*.jsonl",
+          "history.jsonl"
+        ]
       },
       "antigravity": {
         "root": "%USERPROFILE%\\.gemini\\antigravity-cli",
