@@ -1,3 +1,4 @@
+importScripts("browser_tools.js");
 const RELAY = "http://127.0.0.1:7726";
 const ALARM = "birdeye-relay-poll";
 
@@ -150,7 +151,8 @@ async function dispatchOne(tab) {
     await register(tab);
     const data = await post("/commands/claim", {tab_id: String(tab.id)});
     if (!data.command) return;
-    await chrome.tabs.update(tab.id, {active: true});
+    // Conversation reads do not activate or navigate the user tab.
+    if(data.command.action==="reply")await chrome.tabs.update(tab.id, {active: true});
     let result;
     try {
       result = await executeInTab(tab.id, data.command);

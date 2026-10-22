@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import ctypes
 import json
 import secrets
@@ -128,6 +129,8 @@ class RelayState:
             return value.copy() if value else None
 
 
+from browser_commands import BrowserCommands
+BROWSER = BrowserCommands()
 STATE = RelayState()
 
 
@@ -158,8 +161,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path == "/health":
-            self._json(200, {"ok": True, "service": "birdeye-browser-relay", "cdp": False})
+        origin=self.headers.get("Origin","")
+        if parsed.path.startswith("/browser/") and origin and not origin.startswith("chrome-extension://"):
+            self._json(403,{"ok":False,"error":"BROWSER_ORIGIN_DENIED"});return
+        if parsed.path == "/browser/command":
+            command = BROWSER.get(parse_qs(parsed.query).get("id", [""])[0])
+            self._json(200, {"ok":command is not None,"command":command})
+        elif parsed.path == "/health":
+            self._json(200, {"ok": True, "service": "birdeye-browser-relay", "cdp": False, "browser_tools": True, "browser_tool_version": "0.2.2", "process_id": os.getpid(), "browser_client": BROWSER.client})
         elif parsed.path == "/tabs":
             self._json(200, {"ok": True, "tabs": STATE.list_tabs()})
         elif parsed.path == "/commands":
@@ -173,7 +182,18 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             payload = self._read()
-            if parsed.path == "/tabs/register":
+            if parsed.path.startswith("/browser/"):
+                origin=self.headers.get("Origin","")
+                if origin and not origin.startswith("chrome-extension://"):
+                    self._json(403,{"ok":False,"error":"BROWSER_ORIGIN_DENIED"});return
+                if self.headers.get("Content-Type","").split(";")[0]!="application/json":
+                    self._json(415,{"ok":False,"error":"JSON_REQUIRED"});return
+                if parsed.path=="/browser/hello":self._json(200,BROWSER.hello(payload))
+                elif parsed.path=="/browser/enqueue":self._json(202,{"ok":True,"command":BROWSER.enqueue(payload)})
+                elif parsed.path=="/browser/next":self._json(200,{"ok":True,"command":BROWSER.claim()})
+                elif parsed.path=="/browser/complete":self._json(200,{"ok":True,"command":BROWSER.complete(payload)})
+                else:self._json(404,{"ok":False,"error":"NOT_FOUND"})
+            elif parsed.path == "/tabs/register":
                 self._json(200, {"ok": True, "tab": STATE.register_tab(payload)})
             elif parsed.path == "/tabs/unregister":
                 STATE.unregister_tab(str(payload.get("tab_id", "")))
@@ -208,7 +228,9 @@ def main() -> int:
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     args = parser.parse_args()
+    if args.host not in ("127.0.0.1","localhost","::1"):raise ValueError("Loopback bind required")
     server = ThreadingHTTPServer((args.host, args.port), Handler)
+    BROWSER.recover()
     print(f"BirdEye browser relay listening on http://{args.host}:{args.port}", flush=True)
     print("Transport: Chrome extension; CDP: disabled", flush=True)
     try:

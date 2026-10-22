@@ -104,3 +104,6 @@ A green test, file presence, registration, or wiring alone does not prove end-to
 ## Repository
 
 Canonical GitHub repository: `Letterblack0306/Letterblack_BirdEye`. Repository source is authoritative for committed implementation. Local databases, leases, logs, and generated evidence are machine state and should not be committed merely to make the repository describe a live machine.
+
+## Browser capability discovery for agents
+6. [Browser capability and agent recovery](docs/browser-tools.md) - discover browser_action through live MCP tools/list; inspect relay health and extension heartbeat before declaring browser unavailable. A missing connector tool or external execution block is not a BirdEye denial. Reconcile uncertain request_id results; do not disable safeguards or duplicate the relay.

@@ -24,3 +24,8 @@ config.json
 
 # Local-only private bridge config (machine-specific credentials)
 bridge/bridge.config.json
+
+# Machine-local control-plane runtime
+authority/
+# Dated local recovery snapshots
+*.bak-*

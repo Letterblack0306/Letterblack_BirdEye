@@ -1,16 +1,16 @@
 {
   "manifest_version": 3,
   "name": "BirdEye Browser Relay",
-  "version": "0.1.1",
+  "version": "0.3.2",
   "description": "Local browser relay for BirdEye without Chrome remote debugging.",
   "permissions": [
     "tabs",
     "alarms",
-    "scripting"
+    "scripting",
+    "storage"
   ],
   "host_permissions": [
-    "http://127.0.0.1:7726/*",
-    "http://localhost:7726/*"
+    "<all_urls>"
   ],
   "background": {
     "service_worker": "service_worker.js"
@@ -23,6 +23,16 @@
       ],
       "js": [
         "content.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "browser_heartbeat.js"
       ],
       "run_at": "document_idle"
     }
