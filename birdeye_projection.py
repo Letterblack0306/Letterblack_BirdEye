@@ -301,8 +301,16 @@ class Registry:
 
 
 def _is_git_repository(root: Path) -> bool:
-    result = _git(root, "rev-parse", "--is-inside-work-tree")
-    return result.returncode == 0 and result.stdout.strip() == "true"
+    """Require the registered workspace itself to be the Git root.
+
+    Git searches parent directories by default. A temporary or unrelated
+    folder inside a home-directory repository must not inherit that repo:
+    doing so makes status scan the entire home directory.
+    """
+    result = _git(root, "rev-parse", "--show-toplevel")
+    if result.returncode != 0:
+        return False
+    return Path(result.stdout.strip()).resolve() == root.resolve()
 
 
 def _branch_and_head(root: Path) -> tuple[str | None, str | None, bool]:

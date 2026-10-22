@@ -392,6 +392,7 @@ def _spawn(executable: str, args: list[str], cwd: str | None, stdout_target, std
         encoding="utf-8",
         errors="replace",
         shell=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     return proc, resolved, workdir
 

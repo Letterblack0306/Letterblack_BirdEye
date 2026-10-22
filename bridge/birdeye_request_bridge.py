@@ -47,6 +47,7 @@ def run_command(args: list[str], cwd: Path, timeout: int = 120) -> dict[str, Any
         timeout=timeout,
         shell=False,
         check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     return {
         "argv": args,

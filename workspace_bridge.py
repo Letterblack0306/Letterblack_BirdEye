@@ -331,13 +331,14 @@ class RunRequest:
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
     request_id: str | None = None
     task_id: str | None = None
+    requirement_id: str | None = None
     intent: str | None = None
     capability: str | None = None
     context_evidence: dict[str, Any] | None = None
 
     @classmethod
     def from_mapping(cls, value: dict[str, Any]) -> "RunRequest":
-        allowed = {"workspace", "argv", "timeout_seconds", "request_id", "task_id", "intent", "capability", "context_evidence"}
+        allowed = {"workspace", "argv", "timeout_seconds", "request_id", "task_id", "requirement_id", "intent", "capability", "context_evidence"}
         extra = sorted(set(value) - allowed)
         if extra:
             raise BridgeError(f"Unsupported request fields: {', '.join(extra)}")
@@ -356,6 +357,9 @@ class RunRequest:
         task_id = value.get("task_id")
         if task_id is not None:
             task_id = _required_text(task_id, "task_id")
+        requirement_id = value.get("requirement_id")
+        if requirement_id is not None:
+            requirement_id = _required_text(requirement_id, "requirement_id")
         intent = value.get("intent")
         if intent is not None:
             intent = _required_text(intent, "intent")
@@ -366,7 +370,7 @@ class RunRequest:
         if context_evidence is not None and not isinstance(context_evidence, dict):
             raise BridgeError("context_evidence must be an object")
         return cls(workspace=workspace, argv=tuple(raw_argv), timeout_seconds=timeout, request_id=request_id,
-                   task_id=task_id, intent=intent, capability=capability,
+                   task_id=task_id, requirement_id=requirement_id, intent=intent, capability=capability,
                    context_evidence=context_evidence)
 
 
@@ -403,13 +407,14 @@ class RunSequenceRequest:
     stop_on_failure: bool = True
     request_id: str | None = None
     task_id: str | None = None
+    requirement_id: str | None = None
     intent: str | None = None
     capability: str | None = None
     context_evidence: dict[str, Any] | None = None
 
     @classmethod
     def from_mapping(cls, value: dict[str, Any]) -> "RunSequenceRequest":
-        allowed = {"workspace", "commands", "stop_on_failure", "request_id", "task_id", "intent", "capability", "context_evidence"}
+        allowed = {"workspace", "commands", "stop_on_failure", "request_id", "task_id", "requirement_id", "intent", "capability", "context_evidence"}
         extra = sorted(set(value) - allowed)
         if extra:
             raise BridgeError(f"Unsupported request fields: {', '.join(extra)}")
@@ -425,6 +430,9 @@ class RunSequenceRequest:
         task_id = value.get("task_id")
         if task_id is not None:
             task_id = _required_text(task_id, "task_id")
+        requirement_id = value.get("requirement_id")
+        if requirement_id is not None:
+            requirement_id = _required_text(requirement_id, "requirement_id")
         intent = value.get("intent")
         if intent is not None:
             intent = _required_text(intent, "intent")
@@ -435,7 +443,7 @@ class RunSequenceRequest:
         if context_evidence is not None and not isinstance(context_evidence, dict):
             raise BridgeError("context_evidence must be an object")
         return cls(workspace=workspace, commands=commands, stop_on_failure=stop_on_failure, request_id=request_id,
-                   task_id=task_id, intent=intent, capability=capability,
+                   task_id=task_id, requirement_id=requirement_id, intent=intent, capability=capability,
                    context_evidence=context_evidence)
 
 
@@ -918,7 +926,7 @@ def run_command(request: RunRequest, config_path: Path) -> dict[str, Any]:
     evidence = result.get("execution_evidence") or {}
     if "command_hash" in evidence:
         result["execution_history"] = history.finalize(
-            Path(__file__).resolve().parent / "state", evidence
+            Path(__file__).resolve().parent / "state", {**evidence, "task_id": request.task_id, "requirement_id": request.requirement_id}
         )
     return result
 
@@ -997,7 +1005,7 @@ def run_sequence(request: RunSequenceRequest, config_path: Path) -> dict[str, An
         )
         if last_evidence:
             response["execution_history"] = history.finalize(
-                Path(__file__).resolve().parent / "state", last_evidence
+                Path(__file__).resolve().parent / "state", {**last_evidence, "task_id": request.task_id, "requirement_id": request.requirement_id}
             )
     return response
 

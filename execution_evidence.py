@@ -293,13 +293,16 @@ class ExecutionHistory:
         payload = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in self._events)
         events_file.write_text(payload, encoding="utf-8")
         receipt_file = out_dir / "receipt.json"
-        receipt_file.write_text(json.dumps(receipt, indent=2, ensure_ascii=False), encoding="utf-8")
+        bound_receipt = {**receipt, "execution_id": self.execution_id, "workspace": self.workspace}
+        bound_receipt["receipt_sha256"] = _canonical_sha256(bound_receipt)
+        receipt_file.write_text(json.dumps(bound_receipt, indent=2, ensure_ascii=False), encoding="utf-8")
         event_history_sha256 = _sha256_text(payload)
         self.emit("history.persisted", path=str(events_file), event_history_sha256=event_history_sha256)
         return {
             "execution_id": self.execution_id,
             "events_path": str(events_file),
             "receipt_path": str(receipt_file),
+            "receipt_sha256": bound_receipt["receipt_sha256"],
             "event_count": len(self._events),
             "event_history_sha256": event_history_sha256,
         }

@@ -57,6 +57,7 @@ def _spawn_mcp() -> subprocess.Popen:
         stderr=subprocess.PIPE,
         cwd=str(BIRDEYE_DIR),
         bufsize=0,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
 
 

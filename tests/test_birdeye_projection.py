@@ -139,6 +139,17 @@ def test_audit_non_git_directory_is_supported_level(tmp_path: Path):
     assert audit["evidenceLevel"] == bp.EVIDENCE_SUPPORTED
 
 
+def test_registered_subfolder_does_not_inherit_unrelated_parent_git(tmp_path: Path):
+    parent = tmp_path / "parent-repository"
+    _init_repo(parent)
+    workspace = parent / "unrelated" / "nested-workspace"
+    workspace.mkdir(parents=True)
+    config = _write_config(tmp_path, [_project(workspace)])
+    audit = bp.git_audit(bp.Registry(config).resolve("p1"))
+    assert audit["isRepository"] is False
+    assert audit["evidenceLevel"] == bp.EVIDENCE_SUPPORTED
+
+
 # ---------------------------------------------------------------------------
 # Bounded request model
 # ---------------------------------------------------------------------------

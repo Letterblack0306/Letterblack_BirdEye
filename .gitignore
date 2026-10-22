@@ -29,3 +29,6 @@ bridge/bridge.config.json
 authority/
 # Dated local recovery snapshots
 *.bak-*
+
+# BirdEye skill resolver runtime task locks and snapshots (not source)
+.skills/
