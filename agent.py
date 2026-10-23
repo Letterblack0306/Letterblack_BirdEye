@@ -138,6 +138,24 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def bounded_large_file_sha256(path: Path, initial_stat, limit_bytes: int) -> tuple[str | None, str, str | None]:
+    """Stream a large file without loading its contents; reject files changed during the read."""
+    name = path.name.lower()
+    if not any(name.endswith(suffix) or (suffix + ".") in name
+               for suffix in (".db", ".sqlite", ".sqlite3")):
+        return None, "too_large", None
+    if initial_stat.st_size > limit_bytes:
+        return None, "too_large", None
+    try:
+        digest = sha256_file(path)
+        final_stat = path.stat()
+        if (final_stat.st_size, final_stat.st_mtime_ns) != (initial_stat.st_size, initial_stat.st_mtime_ns):
+            return None, "unreadable", "File changed during streaming SHA-256; retry when stable"
+        return digest, "hashed_large", None
+    except (OSError, PermissionError) as exc:
+        return None, "unreadable", f"{type(exc).__name__}: {exc}"
+
+
 def human_bytes(value: int | float) -> str:
     number = float(value)
     for unit in ("B", "KB", "MB", "GB", "TB", "PB"):
@@ -802,7 +820,9 @@ def index_file_event(
     status = "unhashed"
     error: str | None = None
     if size > max_bytes:
-        status = "too_large"
+        file_hash, status, error = bounded_large_file_sha256(
+            physical_path, stat, int(ctx.config.get("max_large_hash_bytes", 512_000_000))
+        )
     else:
         try:
             raw_data = physical_path.read_bytes()
@@ -937,8 +957,28 @@ def trace_workspace(
                 error: str | None = None
 
                 if size > max_bytes:
-                    status = "too_large"
-                    stats.files_large += 1
+                    if size > int(ctx.config.get("max_large_hash_bytes", 512_000_000)):
+                        status = "too_large"
+                        stats.files_large += 1
+                    elif (
+                        existing is not None
+                        and int(existing["size"]) == size
+                        and int(existing["modified_ns"]) == modified_ns
+                        and existing["sha256"]
+                        and existing["hash_status"] in ("hashed_large", "cached_large")
+                    ):
+                        file_hash = str(existing["sha256"])
+                        status = "cached_large"
+                        stats.files_cached += 1
+                    else:
+                        file_hash, status, error = bounded_large_file_sha256(
+                            path, stat, int(ctx.config.get("max_large_hash_bytes", 512_000_000))
+                        )
+                        if status == "hashed_large":
+                            stats.files_hashed += 1
+                            stats.bytes_hashed += size
+                        elif status == "unreadable":
+                            stats.files_unreadable += 1
                 elif (
                     existing is not None
                     and int(existing["size"]) == size
