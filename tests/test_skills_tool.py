@@ -409,7 +409,7 @@ def test_local_projects_prefers_live_registered_root_and_flags_stale_mapping(tmp
     result = mcp_server.local_projects("brew")
     assert result["ok"] is True
     current = result["projects"]["brew"]
-    assert current["local_path"] == str(live)
+    assert current["local_path"] == str(live.resolve())
     assert current["exists"] is True
     assert current["mapped_local_path"] == str(mapped)
     assert current["mapping_drift"] is True

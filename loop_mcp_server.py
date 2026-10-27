@@ -277,7 +277,7 @@ def serve_stdio() -> None:
                     continue
                 try:
                     result = invoke(name, arguments)
-                except (bird.BridgeError, bird.GovernanceError, ValueError, OSError) as exc:
+                except Exception as exc:
                     result = {"ok": False, "error": type(exc).__name__, "message": str(exc)}
                 if request_id is not None:
                     _send({

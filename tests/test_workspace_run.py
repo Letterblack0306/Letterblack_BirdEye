@@ -488,3 +488,85 @@ def test_birdeye_windows_subprocess_launches_are_hidden():
     source = (Path(__file__).resolve().parents[1] / "workspace_bridge.py").read_text(encoding="utf-8")
     assert source.count("creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0") == 2
 
+
+
+
+# Machine-qualified LAN SSH execution: the remote BirdEye is the only executor.
+# Test fixtures live under pytest's temporary directories; no real SSH is
+# attempted by these contract tests.
+def _ssh_test_config(tmp_path):
+    cfg = tmp_path / "config.json"
+    identity = tmp_path / "key"
+    identity.write_text("mock identity path, not a private key", encoding="utf-8")
+    cfg.write_text(json.dumps({
+        "ssh_targets": [{
+            "id": "main-birdeye", "host": "192.168.1.240", "user": "Letterblack",
+            "port": 22, "expected_hostname": "LETTERBLACK",
+            "identity_file": str(identity), "birdeye_root": r"C:\BirdEye",
+            "default_workspace": r"C:\BirdEye",
+        }]
+    }), encoding="utf-8")
+    return cfg
+
+
+def test_machine_ssh_routing_never_guesses_local_or_remote(tmp_path):
+    from machine_ssh_target import maybe_invoke
+
+    cfg = _ssh_test_config(tmp_path)
+    assert maybe_invoke("workspace_identity", {"workspace": r"C:\BirdEye"}, cfg) is None
+    assert maybe_invoke("workspace_identity", {"workspace": "other-computer"}, cfg) is None
+    assert maybe_invoke("workspace_identity", {"workspace": "main-birdeye::relative"}, cfg)["error"] == "SSH_TARGET_WORKSPACE"
+
+
+def test_machine_ssh_uses_host_pinned_noninteractive_transport_and_keeps_arguments_on_stdin(tmp_path, monkeypatch):
+    from machine_ssh_target import maybe_invoke, _MARKER
+    from types import SimpleNamespace
+
+    cfg = _ssh_test_config(tmp_path)
+    observed = {}
+    def fake_run(argv, **kwargs):
+        observed.update({"argv": argv, "stdin": kwargs["input"], "cwd": kwargs.get("cwd")})
+        reply = {"hostname": "LETTERBLACK", "result": {"ok": True, "stdout": "on main"}}
+        return SimpleNamespace(returncode=0, stdout=_MARKER + json.dumps(reply) + "\n", stderr="")
+    monkeypatch.setattr("machine_ssh_target.subprocess.run", fake_run)
+    result = maybe_invoke("workspace_run", {
+        "workspace": "main-birdeye", "argv": ["python", "-c", 'print("literal ; &&")'],
+        "timeout_seconds": 10,
+    }, cfg)
+    assert result["ok"] and result["execution_target"]["verified"]
+    assert result["execution_target"]["workspace"] == r"C:\BirdEye"
+    assert observed["argv"][-1] == "python -"
+    assert "StrictHostKeyChecking=yes" in observed["argv"]
+    assert "IdentitiesOnly=yes" in observed["argv"]
+    assert "literal ; &&" not in " ".join(observed["argv"])
+    assert "literal ; &&" in observed["stdin"]
+
+
+def test_machine_ssh_host_mismatch_is_rejected_before_executing_local_commands(tmp_path, monkeypatch):
+    from machine_ssh_target import maybe_invoke, _MARKER
+    from types import SimpleNamespace
+
+    cfg = _ssh_test_config(tmp_path)
+    def fake_run(argv, **kwargs):
+        reply = {"hostname": "WRONG-HOST", "result": {"ok": True, "stdout": "spoof"}}
+        return SimpleNamespace(returncode=0, stdout=_MARKER + json.dumps(reply), stderr="")
+    monkeypatch.setattr("machine_ssh_target.subprocess.run", fake_run)
+    result = maybe_invoke("workspace_run", {"workspace": "main-birdeye", "argv": ["whoami"]}, cfg)
+    assert not result["ok"]
+    assert result["error"] == "SSH_HOST_IDENTITY_MISMATCH"
+    assert not result["execution_target"]["verified"]
+
+
+def test_machine_ssh_outage_fails_closed_instead_of_falling_back_to_mini(tmp_path, monkeypatch):
+    from machine_ssh_target import maybe_invoke
+    from types import SimpleNamespace
+
+    cfg = _ssh_test_config(tmp_path)
+    monkeypatch.setattr("machine_ssh_target.subprocess.run",
+                        lambda argv, **kwargs: SimpleNamespace(returncode=255,
+                                              stderr="Connection refused", stdout=""))
+    result = maybe_invoke("workspace_run", {"workspace": "main-birdeye",
+                                            "argv": ["python", "-c", "print(1)"]}, cfg)
+    assert not result["ok"]
+    assert result["error"] == "SSH_TRANSPORT_UNAVAILABLE"
+    assert not result["execution_target"]["verified"]

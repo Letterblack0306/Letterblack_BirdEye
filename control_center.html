@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0b1016">
+  <title>BirdEye — Control Center</title>
+  <link rel="stylesheet" href="/control.css">
+</head>
+<body>
+<div class="app app-cards" id="app">
+  <div class="main-shell">
+    <header class="topbar">
+      <div class="topbar-left">
+        <a class="top-identity" href="/" aria-label="Back to LetterBlack app launcher">
+          <span class="brandmark" aria-hidden="true">
+            <svg viewBox="0 0 42 42" fill="none"><circle cx="21" cy="21" r="16.5" stroke="currentColor" stroke-opacity=".35"/><circle cx="21" cy="21" r="10" stroke="currentColor" stroke-width="1.5"/><circle cx="21" cy="21" r="3.5" fill="currentColor"/><path d="M21 0v9M21 33v9M0 21h9M33 21h9" stroke="currentColor" stroke-opacity=".65"/></svg>
+          </span>
+          <span class="top-identity-label"><strong>BirdEye<span class="brand-accent">.</span></strong><small>CONTROL CENTER</small></span>
+        </a>
+        <span class="top-separator" aria-hidden="true"></span>
+        <span class="breadcrumbs"><span>Local operations</span><span class="chevron">/</span><strong id="crumb">Overview</strong></span>
+      </div>
+      <div class="topbar-right">
+        <span class="top-meta" id="checked-time">Not checked</span>
+        <span class="top-divider"></span>
+        <span class="connection-state" id="connection-state"><span class="dot"></span> Connecting</span>
+        <span class="host-label" id="side-host">Discovering host…</span>
+        <button type="button" id="refresh" class="refresh-button" title="Refresh current live state"><span data-icon="refresh"></span><span>Refresh</span></button>
+        <a class="launcher-compact" href="/" title="All LetterBlack apps" aria-label="All LetterBlack apps"><span data-icon="arrow-left"></span></a>
+      </div>
+    </header>
+    <main class="main" id="main">
+      <div class="page-head">
+        <div>
+          <p class="eyebrow" id="eyebrow">SYSTEM OVERVIEW</p>
+          <h1 id="title">Overview</h1>
+          <p class="page-subtitle" id="subtitle">Select any capability card to inspect its live detail.</p>
+        </div>
+        <div id="page-actions" class="page-actions"></div>
+      </div>
+      <div id="error" class="error-banner" role="alert" hidden></div>
+      <div id="content" aria-live="polite"><div class="loading-state"><span class="loading-ring"></span> Connecting to BirdEye...</div></div>
+      <footer class="page-footer"><span>One gateway · Workspace-owned decisions · Observable evidence</span><span id="footer-host">BirdEye MCP</span></footer>
+    </main>
+  </div>
+</div>
+<div id="detail-layer" class="detail-layer" hidden>
+  <div id="panel-scrim" class="panel-scrim"></div>
+  <section id="detail-panel" class="detail-panel" role="dialog" aria-modal="true" aria-labelledby="panel-title" tabindex="-1">
+    <header class="panel-topbar">
+      <div class="panel-heading">
+        <div class="panel-kicker"><span class="panel-live-dot"></span><span id="panel-eyebrow">CAPABILITY DETAILS</span></div>
+        <h2 id="panel-title">Workspace Intelligence</h2>
+        <p id="panel-subtitle">Evidence and controls from the installed BirdEye gateway.</p>
+      </div>
+      <div class="panel-actions">
+        <button id="panel-minimize" class="panel-minimize" type="button" title="Minimize back to originating card" aria-label="Minimize to card"><span data-icon="minus"></span><span>Minimize</span></button>
+        <button id="panel-close" class="panel-close" type="button" aria-label="Close panel" title="Close panel"><span data-icon="close"></span></button>
+      </div>
+    </header>
+    <div class="panel-scroll" id="panel-scroll">
+      <div id="panel-error" class="error-banner" role="alert" hidden></div>
+      <div id="panel-content" class="panel-content" aria-live="polite"></div>
+    </div>
+    <footer class="panel-foot"><span>Floating workspace · Live source, no duplicate runtime</span><span>Esc to return to card</span></footer>
+  </section>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+<script src="/control.js?v=cards-floating-20261023"></script>
+</body>
+</html>

@@ -905,6 +905,47 @@ def trace_workspace(
     progress_every: int | None = None,
     checkpoint_every: int | None = None,
 ) -> dict[str, Any]:
+    # One canonical workspace.db writer per process/machine. The lock spans
+    # scanning and final reconciliation; competing jobs never touch SQLite.
+    import contextlib
+    if os.name == "nt":
+        import msvcrt
+    else:
+        import fcntl
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    lock_path = STATE_DIR / "workspace-index.lock"
+    with open(lock_path, "a+b") as lock:
+        lock.seek(0, os.SEEK_END)
+        if lock.tell() == 0:
+            lock.write(b"0")
+            lock.flush()
+        lock.seek(0)
+        try:
+            if os.name == "nt":
+                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise RuntimeError("INDEX_ALREADY_RUNNING: another BirdEye indexing run owns the workspace database") from exc
+        try:
+            return _trace_workspace_unlocked(
+                ctx, resume=resume,
+                progress_every=progress_every, checkpoint_every=checkpoint_every)
+        finally:
+            lock.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def _trace_workspace_unlocked(
+    ctx: Context,
+    *,
+    resume: bool = False,
+    progress_every: int | None = None,
+    checkpoint_every: int | None = None,
+) -> dict[str, Any]:
     max_bytes = int(ctx.config.get("max_file_bytes", 5_000_000))
     progress_every = max(1, int(progress_every or ctx.config.get("progress_every_files", 250)))
     checkpoint_every = max(1, int(checkpoint_every or ctx.config.get("checkpoint_every_files", 1000)))
@@ -1294,21 +1335,27 @@ def search_workspace(
     started = time.monotonic()
     connection = None
     try:
-        # The live watcher maintains workspace.db incrementally.  The current
-        # EYES projection is an auxiliary, rotated-shard projection and may
-        # not yet contain every configured root, so it must not displace the
-        # live workspace index while that index is available.
-        if legacy_storage_retired():
-            query_path = STATE_DIR.parent / "eye_Databa" / "eye_workspace_query_01.db"
-            if not query_path.exists():
-                raise GovernanceError(
-                    "EYES query projection is unavailable and legacy storage is retired"
-                )
+        if os.environ.get("BIRDEYE_CLOUD_PROFILE") == "1":
+            # EYES is the canonical, replayable search projection on Oracle.
             from eye_query import connect_query, initialize_workspace_query
             connection = connect_query("workspace")
             initialize_workspace_query(connection)
         else:
-            connection = open_database()
+            # The live watcher maintains workspace.db incrementally.  The current
+            # EYES projection is an auxiliary, rotated-shard projection and may
+            # not yet contain every configured root, so it must not displace the
+            # live workspace index while that index is available.
+            if legacy_storage_retired():
+                query_path = STATE_DIR.parent / "eye_Databa" / "eye_workspace_query_01.db"
+                if not query_path.exists():
+                    raise GovernanceError(
+                        "EYES query projection is unavailable and legacy storage is retired"
+                    )
+                from eye_query import connect_query, initialize_workspace_query
+                connection = connect_query("workspace")
+                initialize_workspace_query(connection)
+            else:
+                connection = open_database()
         scanned = skipped = serial = 0
         candidates: list[tuple[int, int, dict[str, Any]]] = []
 
@@ -1401,20 +1448,6 @@ def search_workspace(
 
             snippet = ""
             line_number = None
-            if content:
-                lines = content.splitlines()
-                best_index = 0
-                best_score = -1
-                for index, line in enumerate(lines):
-                    lower = line.lower()
-                    line_score = (200 if query_lower in lower else 0) + sum(
-                        20 for term in terms if term in lower
-                    )
-                    if line_score > best_score:
-                        best_score = line_score
-                        best_index = index
-                snippet = "\n".join(lines[max(0,best_index-2):min(len(lines),best_index+3)])[:1200]
-                line_number = best_index + 1
 
             root = root_by_name.get(str(row["root"]))
             metadata_parse_status = "not_applicable"
@@ -1484,6 +1517,33 @@ def search_workspace(
             if len(results) >= max_results:
                 break
 
+        # Build snippets only for ranked, deduplicated results.
+        for item in results:
+            cached = connection.execute(
+                "SELECT content FROM files WHERE root=? AND path=?",
+                (item["root"], item["path"]),
+            ).fetchone()
+            content = (cached["content"] or "") if cached else ""
+            snippet = ""
+            line_number = None
+            if content:
+                lines = content.splitlines()
+                best_index = 0
+                best_score = -1
+                for index, line in enumerate(lines):
+                    lower = line.lower()
+                    line_score = (200 if query_lower in lower else 0) + sum(
+                        20 for term in terms if term in lower
+                    )
+                    if line_score > best_score:
+                        best_score = line_score
+                        best_index = index
+                snippet = "\n".join(lines[max(0,best_index-2):min(len(lines),best_index+3)])[:1200]
+                line_number = best_index + 1
+
+            item["snippet"] = snippet
+            item["line"] = line_number
+
         if results:
             outcome = "matches_found"
             message = f"Found {len(results)} matching files."
@@ -1552,10 +1612,23 @@ def search_workspace(
 
 
 def database_status() -> dict[str, Any]:
-    connection = open_database()
+    # A status read must never compete for the single-writer SQLite lock.
+    # open_database() executes schema DDL and registry UPSERTs; using it here
+    # used to block live MCP root/status calls behind an active index trace.
+    if legacy_storage_retired():
+        raise GovernanceError("legacy state\\workspace.db is retired; use the EYES query projection")
+    if not DATABASE_PATH.is_file():
+        # First-start migration only: initialize the legacy compatibility
+        # schema once so a fresh, excluded-only installation can report status.
+        connection = open_database()
+    else:
+        connection = sqlite3.connect(
+            DATABASE_PATH.as_uri() + "?mode=ro", uri=True, timeout=2.0
+        )
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only=ON")
     try:
         ctx = Context.load()
-        sync_root_registry(connection, ctx)
         totals = connection.execute(
             """
             SELECT COUNT(*) AS file_count, COALESCE(SUM(size),0) AS total_bytes,
@@ -1581,8 +1654,17 @@ def database_status() -> dict[str, Any]:
                 """,
                 (root.name,),
             ).fetchone()
+            # A concurrent run can fail before an earlier run completes.
+            # The effective root state is the most recently FINISHED observation,
+            # not merely the last run to start.
             latest = connection.execute(
-                "SELECT * FROM root_runs WHERE root=? ORDER BY started_at DESC LIMIT 1",
+                "SELECT * FROM root_runs WHERE root=? "
+                "ORDER BY COALESCE(completed_at, started_at) DESC, started_at DESC LIMIT 1",
+                (root.name,),
+            ).fetchone()
+            last_failure = connection.execute(
+                "SELECT completed_at, error FROM root_runs WHERE root=? AND status='failed' "
+                "ORDER BY completed_at DESC LIMIT 1",
                 (root.name,),
             ).fetchone()
             unresolved_examples = [dict(row) for row in connection.execute(
@@ -1601,6 +1683,8 @@ def database_status() -> dict[str, Any]:
                 root_status = "INDEXING"
             elif latest["status"] == "failed":
                 root_status = "FAILED"
+            elif latest["status"] != "completed":
+                root_status = "PARTIAL"
             elif int(counts["unresolved_files"] or 0) > 0:
                 root_status = "PARTIAL"
             else:
@@ -1631,6 +1715,13 @@ def database_status() -> dict[str, Any]:
                 "last_started_at": latest["started_at"] if latest else None,
                 "last_completed_at": latest["completed_at"] if latest else None,
                 "last_run_status": latest["status"] if latest else None,
+                "last_error": latest["error"] if latest and latest["status"] == "failed" else None,
+                "last_failure": dict(last_failure) if last_failure else None,
+                "recovered_after_failure": bool(
+                    latest and last_failure and latest["status"] == "completed"
+                    and latest["completed_at"] and last_failure["completed_at"]
+                    and latest["completed_at"] > last_failure["completed_at"]
+                ),
                 "status": root_status,
             })
         enabled_roots = [item for item in roots if item["enabled"] and item["index_enabled"]]

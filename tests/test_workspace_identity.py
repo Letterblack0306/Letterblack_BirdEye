@@ -124,6 +124,29 @@ class WorkspaceIdentityTests(unittest.TestCase):
             self.assertTrue(revision["ok"])
             self.assertEqual(revision["workspace_root"], str(unregistered.resolve()))
 
+    def test_nested_folder_does_not_inherit_parent_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(Path(tmp))
+            nested = repo / "nested"
+            nested.mkdir()
+            with patch.object(identity.Context, "load", return_value=_context(nested)):
+                result = identity.workspace_identity()
+            self.assertFalse(result["git"]["is_repository"])
+
+    def test_git_timeout_kills_process_tree_before_reraising(self) -> None:
+        from unittest.mock import MagicMock
+        process = MagicMock()
+        process.communicate.side_effect = [
+            subprocess.TimeoutExpired(["git", "status"], 10), ("", ""),
+        ]
+        with patch.object(identity.subprocess, "Popen", return_value=process), patch(
+            "execution_evidence._kill_tree"
+        ) as kill_tree:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                identity._git(Path("."), "status")
+        kill_tree.assert_called_once_with(process)
+        self.assertEqual(process.communicate.call_count, 2)
+
     def test_git_status_timeout_returns_degraded_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._repo(Path(tmp))

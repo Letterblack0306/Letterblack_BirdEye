@@ -163,7 +163,7 @@ def _source_for(path: Path) -> tuple[str, str, str | None, Path] | None:
     }
     resolved = path.resolve()
     for root in domains["workspace"]:
-        if root.get("id") in {"memory", "skills"} or root.get("class") == "memory":
+        if root.get("id") in {"memory", "skills"} or (root.get("class") == "memory" and not root.get("remote_machine")):
             continue
         root_path = Path(str(root.get("path", ""))).resolve()
         try:

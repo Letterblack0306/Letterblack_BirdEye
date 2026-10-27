@@ -65,7 +65,21 @@
       await new Promise(r=>setTimeout(r,100));
       const active=(await chrome.tabs.query({windowId:t.windowId,active:true}))[0];
       if(active?.id!==id||active.url!==p.expected_url)throw Error("BROWSER_CAPTURE_TARGET_CHANGED");
-      const data=await chrome.tabs.captureVisibleTab(t.windowId,{format:"png"});
+      // captureVisibleTab requires a renderable foreground browser window.
+      // A background/minimized window can fail with "image readback failed".
+      const captureWindow=await chrome.windows.get(t.windowId);
+      if(captureWindow.state==="minimized")await chrome.windows.update(t.windowId,{state:"normal"});
+      if(!captureWindow.focused)await chrome.windows.update(t.windowId,{focused:true});
+      await new Promise(r=>setTimeout(r,350));
+      let data;
+      for(let attempt=0;attempt<2;attempt++){
+        try{data=await chrome.tabs.captureVisibleTab(t.windowId,{format:"png"});break;}
+        catch(e){
+          if(attempt||!/image readback failed/i.test(String(e.message||e)))throw e;
+          await new Promise(r=>setTimeout(r,500));
+        }
+      }
+      if(!data?.startsWith("data:image/png;base64,"))throw Error("BROWSER_CAPTURE_INVALID_PNG");
       const after=await chrome.tabs.get(id);
       if(after.url!==p.expected_url)throw Error("BROWSER_IDENTITY_CHANGED");
       return {ok:true,tab_id:String(id),url:after.url,image_base64:data.split(",")[1],mime_type:"image/png"};

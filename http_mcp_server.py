@@ -9,8 +9,12 @@ from typing import Any
 
 import mcp_server as bird
 import loop_mcp_server as loops
-import app_gateway
-import llm_gateway_bridge
+CLOUD_PROFILE = os.environ.get("BIRDEYE_CLOUD_PROFILE") == "1"
+from concurrent.futures import ThreadPoolExecutor
+_CLOUD_EXECUTOR = ThreadPoolExecutor(max_workers=1) if CLOUD_PROFILE else None
+if not CLOUD_PROFILE:
+    import app_gateway
+    import llm_gateway_bridge
 
 
 SERVER_NAME = "letterblack-birdeye"
@@ -37,12 +41,16 @@ def _configured_host_port() -> tuple[str, int]:
 
 
 def _tool_definitions() -> list[dict[str, Any]]:
-    return list(bird._TOOL_DEFINITIONS) + [
+    internal = [{"name":"remote_index_ingest","description":"Oracle-internal configured-source ingestion","inputSchema":{"type":"object","properties":{},"additionalProperties":True}}] if CLOUD_PROFILE else []
+    return internal + list(bird._TOOL_DEFINITIONS) + [
         tool for tool in loops._LOOP_TOOLS if tool["name"].startswith("loop_")
     ]
 
 
 def _invoke_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    if name == "remote_index_ingest":
+        from oracle_index_sync import invoke
+        return invoke(arguments)
     if name in loops._LOOP_NAMES and name.startswith("loop_"):
         return loops.invoke(name, arguments)
     return bird.invoke(name, arguments)
@@ -82,6 +90,8 @@ def build_app():
     from starlette.responses import JSONResponse
 
     async def on_list_tools(ctx, params):
+        from oracle_index_sync import on_mcp_connected
+        on_mcp_connected()
         return types.ListToolsResult(
             tools=[
                 types.Tool(
@@ -96,7 +106,7 @@ def build_app():
     async def on_call_tool(ctx, params):
         name = str(params.name)
         arguments = dict(params.arguments or {})
-        result = await asyncio.to_thread(_invoke_tool, name, arguments)
+        result = await asyncio.get_running_loop().run_in_executor(_CLOUD_EXECUTOR, _invoke_tool, name, arguments) if CLOUD_PROFILE else await asyncio.to_thread(_invoke_tool, name, arguments)
         image_data = result.get("_image_base64") if isinstance(result, dict) else None
         if image_data:
             metadata = {key: value for key, value in result.items() if key != "_image_base64"}
@@ -112,10 +122,42 @@ def build_app():
         SERVER_NAME,
         version="1.0",
         instructions=bird.BIRDEYE_MCP_INSTRUCTIONS,
-        on_list_tools=on_list_tools,
-        on_call_tool=on_call_tool,
     )
-    app = server.streamable_http_app(streamable_http_path=MCP_PATH)
+    if hasattr(server, "list_tools"):
+        # Use the stable SDK transport while keeping BirdEye schemas and dispatch.
+        from contextlib import asynccontextmanager
+        from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+        from starlette.applications import Starlette
+        from starlette.routing import Route
+
+        @server.list_tools()
+        async def list_tools():
+            return (await on_list_tools(None, None)).tools
+
+        @server.call_tool()
+        async def call_tool(name, arguments):
+            return await on_call_tool(None, types.CallToolRequestParams(name=name, arguments=arguments))
+
+        manager = StreamableHTTPSessionManager(server, json_response=True, stateless=True)
+
+        class Endpoint:
+            async def __call__(self, scope, receive, send):
+                await manager.handle_request(scope, receive, send)
+
+        @asynccontextmanager
+        async def lifespan(app):
+            async with manager.run():
+                yield
+
+        app = Starlette(routes=[Route(MCP_PATH, Endpoint(), methods=["GET", "POST", "DELETE"])], lifespan=lifespan)
+
+    else:
+        # The installed Windows SDK uses constructor callbacks.
+        server = Server(
+            SERVER_NAME, version="1.0", instructions=bird.BIRDEYE_MCP_INSTRUCTIONS,
+            on_list_tools=on_list_tools, on_call_tool=on_call_tool,
+        )
+        app = server.streamable_http_app(streamable_http_path=MCP_PATH)
 
     async def health(request):
         return JSONResponse(
@@ -131,8 +173,9 @@ def build_app():
         )
 
     app.router.add_route("/health", health, methods=["GET"])
-    app_gateway.register_routes(app)
-    llm_gateway_bridge.register_routes(app)
+    if not CLOUD_PROFILE:
+        app_gateway.register_routes(app)
+        llm_gateway_bridge.register_routes(app)
 
     token = os.environ.get("BIRDEYE_HTTP_TOKEN", "")
     if not token:
@@ -162,6 +205,8 @@ def build_app():
 
 
 async def run() -> None:
+    from oracle_index_sync import on_mcp_connected
+    on_mcp_connected()
     host, port = _configured_host_port()
 
     try:
@@ -172,7 +217,7 @@ async def run() -> None:
         ) from exc
 
     watcher = None
-    gateway = llm_gateway_bridge.ManagedGateway()
+    gateway = None if CLOUD_PROFILE else llm_gateway_bridge.ManagedGateway()
     process_lease = bird._McpProcessLease()
     try:
         if not process_lease.acquire():
@@ -183,7 +228,7 @@ async def run() -> None:
                 flush=True,
             )
         try:
-            watcher = bird.start_watcher(bird._load_ctx())
+            watcher = bird.start_watcher(bird._load_ctx(), selected={"cloud-workspace"} if CLOUD_PROFILE else None)
         except (bird.GovernanceError, OSError, RuntimeError, ValueError) as exc:
             print(
                 f"[birdeye-http] watcher unavailable: {exc}",
@@ -192,8 +237,9 @@ async def run() -> None:
             )
 
         try:
-            gateway.start()
-            if not await gateway.wait_ready():
+            if gateway is not None:
+                gateway.start()
+            if gateway is not None and not await gateway.wait_ready():
                 print("[birdeye-http] FreeLLMAPI did not become ready", file=sys.stderr, flush=True)
         except (OSError, RuntimeError) as exc:
             print(f"[birdeye-http] FreeLLMAPI unavailable: {exc}", file=sys.stderr, flush=True)
@@ -206,10 +252,11 @@ async def run() -> None:
             flush=True,
         )
         await uvicorn.Server(
-            uvicorn.Config(app, host=host, port=port, log_level="warning")
+            uvicorn.Config(app, host=host, port=port, log_level="warning", limit_concurrency=16 if CLOUD_PROFILE else None)
         ).serve()
     finally:
-        gateway.stop()
+        if gateway is not None:
+            gateway.stop()
         bird.stop_watcher(watcher)
         process_lease.release()
         _close_legacy_memory_service()

@@ -136,6 +136,11 @@ def dashboard_html() -> str:
         )
         for spec in APPS.values()
     )
+    cards += ('<a class="card" href="/apps/birdeye-control/">'
+              '<div class="icon" style="background:#245c58">BE</div>'
+              '<div class="copy"><strong>BirdEye Control Center</strong>'
+              '<span>Workspaces, tools, skills, execution receipts and configuration.</span></div>'
+              '<span class="arrow">↗</span></a>')
     return """<!doctype html>
 <html>
 <head>
@@ -162,16 +167,10 @@ async def dashboard(_request: Request) -> HTMLResponse:
 
 
 async def app_status(_request: Request) -> JSONResponse:
-    return JSONResponse(
-        {
-            "ok": True,
-            "apps": [
-                {"id": spec.id, "name": spec.name, "path": spec.path, "running": _running(spec.id)}
-                for spec in APPS.values()
-            ],
-        }
-    )
-
+    return JSONResponse({"ok": True, "apps": [
+        {"id": spec.id, "name": spec.name, "path": spec.path, "running": _running(spec.id)}
+        for spec in APPS.values()
+    ]})
 
 _HOP_HEADERS = {
     "connection",
@@ -260,7 +259,35 @@ async def proxy_websocket(websocket: WebSocket) -> None:
 
 def register_routes(app: Any) -> None:
     methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+    from control_center_api import snapshot, skill_query, history, config, workspace, receipt, storage, git_history, git_commit, github_work, registry, upload_file
     app.router.add_route("/", dashboard, methods=["GET"])
+    from starlette.responses import FileResponse
+    app.router.add_route("/apps/birdeye-control/", lambda request: HTMLResponse((Path(__file__).with_name("control_center.html")).read_text(encoding="utf-8")), methods=["GET"])
+    app.router.add_route("/apps/birdeye-control", lambda request: HTMLResponse((Path(__file__).with_name("control_center.html")).read_text(encoding="utf-8")), methods=["GET"])
+    # The Control Center is a native BirdEye app, not an APPS reverse-proxy target.
+    # Normalize alternate browser/launcher entrypoints before generic /apps/{app_id}.
+    from starlette.responses import RedirectResponse
+    async def control_center_alias(request: Request) -> Response:
+        suffix = str(request.path_params.get("path") or "").strip("/")
+        if suffix not in ("", "index.html"):
+            return JSONResponse({"error": "unknown Control Center route"}, status_code=404)
+        return RedirectResponse(url="/apps/birdeye-control/" + (("?" + request.url.query) if request.url.query else ""), status_code=307)
+    app.router.add_route("/apps/birdeye-control/{path:path}", control_center_alias, methods=["GET"])
+
+    app.router.add_route("/control.css", lambda request: FileResponse(Path(__file__).with_name("control_center.css"), media_type="text/css", headers={"Cache-Control":"no-store"}), methods=["GET"])
+    app.router.add_route("/control.js", lambda request: FileResponse(Path(__file__).with_name("control_center.js"), media_type="text/javascript", headers={"Cache-Control":"no-store"}), methods=["GET"])
+    app.router.add_route("/control/api/snapshot", snapshot, methods=["GET"])
+    app.router.add_route("/control/api/skills", skill_query, methods=["GET"])
+    app.router.add_route("/control/api/history", history, methods=["GET"])
+    app.router.add_route("/control/api/workspace", workspace, methods=["GET"])
+    app.router.add_route("/control/api/git", git_history, methods=["GET"])
+    app.router.add_route("/control/api/github", github_work, methods=["GET"])
+    app.router.add_route("/control/api/git/commit", git_commit, methods=["GET"])
+    app.router.add_route("/control/api/receipt", receipt, methods=["GET"])
+    app.router.add_route("/control/api/storage", storage, methods=["GET"])
+    app.router.add_route("/control/api/config", config, methods=["GET", "POST"])
+    app.router.add_route("/control/api/registry", registry, methods=["GET", "POST"])
+    app.router.add_route("/control/api/upload", upload_file, methods=["POST"])
     app.router.add_route("/apps/status", app_status, methods=["GET"])
     app.router.add_route("/apps/{app_id}", proxy_http, methods=methods)
     app.router.add_route("/apps/{app_id}/{path:path}", proxy_http, methods=methods)

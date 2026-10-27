@@ -34,7 +34,7 @@ from birdeye_watcher import start_watcher, stop_watcher
 
 BIRDEYE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BIRDEYE_DIR / "config.json"
-MEMORY_ROOT = Path(r"C:\MCP Local\Memory")
+MEMORY_ROOT = Path(os.environ.get("BIRDEYE_MEMORY_ROOT", r"C:\MCP Local\Memory"))
 SHARED_VECTOR_INDEX = BIRDEYE_DIR / "state" / "vectors" / "semantic.db"
 EYE_DATABASE_DIR = BIRDEYE_DIR / "eye_Databa"
 MEMORY_QUERY_INDEX = EYE_DATABASE_DIR / "eye_memory_query_01.db"
@@ -49,7 +49,7 @@ except (OSError, ValueError, TypeError):
 SKILLS_ROOT = Path(
     os.environ.get("SKILLS_ROOT", _EYE_SKILLS_PATH or "C:/MCP Local/Skills/curated")
 ).resolve()
-BIRDEYE_MCP_INSTRUCTIONS = "BirdEye is the user's shared local MCP gateway for current workspace evidence, governed commands with receipts, historical Memory, Skills, and GPT-Knowledge.\nFor tasks involving the user's local files, repositories, workspaces, history, or commands, discover and use BirdEye tools instead of asking the user to paste or execute what BirdEye can access.\nAlways supply a registered workspace ID or existing absolute path for workspace operations.\nTrust current files and fresh runtime output before Git state, execution receipts, historical Memory, or GPT-Knowledge. Verify effects independently: exit code 0 alone is not proof.\nFor a mutation or external side effect, honor the user's existing explicit authorization for that specific operation and target; request approval only if missing or if the scope expands. Inspect every step of a command sequence.\nBefore choosing or repeating an evaluation, first establish the active workspace and revision via workspace_identity and review its implementation gates, capability inventory, existing tests, historical agent sessions, execution receipts, and recent command history. Identify previous results and their evidence classification, compare the proven revision and affected owners with the current runtime, configuration, dependencies and acceptance requirements, then reuse applicable proof. Re-test only where proof is absent, stale, contradicted, changed, or does not satisfy the current acceptance criterion. If re-testing, record why and compare the new outcome against the old one. Do not treat indexed historical evidence as current authority; do not claim current acceptance without adequate current evidence. The agent should reason from this evidence, not execute a prescribed fixed test sequence. Before starting any task: (1) call memory_recall with the task topic to find earlier decisions and past work; (2) for any design, UI, style, icon or methodology work, call skills operation=resolve with workspace_root, task and domain, then reuse the result with operation=fetch_locked. If a domain is already locked, never choose different skills for it and never use plain fetch for it; loading only the sections you need is fine, but only from locked skills; (3) when the task is finished, call skills operation=complete_task.\nWorkspace hygiene: anything left in a workspace will later be found and treated as real by other agents. Keep exactly one live implementation, config and entrypoint per responsibility; never leave copies, _old/_backup/v2 files, parked fallbacks, commented-out code or scratch files beside live code. Recoverability belongs in version control or outside the workspace, not in sibling copies. Before finishing, every artifact you created or touched is integrated, removed (recoverable from history), or moved out of the workspace with a note. Protect user data, credentials, receipts and unreviewed work by committing, stashing or exporting them; never delete what history cannot restore without the user's approval.\nOn failures, consult the evidence-led-investigation skill. These instructions are advisory; BirdEye's execution authority remains independent."
+BIRDEYE_MCP_INSTRUCTIONS = "BirdEye is the user's shared local MCP gateway for current workspace evidence, governed commands with receipts, historical Memory, Skills, and GPT-Knowledge.\nFor tasks involving the user's local files, repositories, workspaces, history, or commands, discover and use BirdEye tools instead of asking the user to paste or execute what BirdEye can access.\nAlways supply a registered workspace ID, existing absolute path, or configured machine-qualified SSH target. For main Windows PC use workspace=main-birdeye (C:\\BirdEye on LETTERBLACK); remote failures must not fall back to the Mini PC. Local absolute paths execute only on the selected local machine.\nTrust current files and fresh runtime output before Git state, execution receipts, historical Memory, or GPT-Knowledge. Verify effects independently: exit code 0 alone is not proof.\nFor a mutation or external side effect, honor the user's existing explicit authorization for that specific operation and target; request approval only if missing or if the scope expands. Inspect every step of a command sequence.\nBefore choosing or repeating an evaluation, first establish the active workspace and revision via workspace_identity and review its implementation gates, capability inventory, existing tests, historical agent sessions, execution receipts, and recent command history. Identify previous results and their evidence classification, compare the proven revision and affected owners with the current runtime, configuration, dependencies and acceptance requirements, then reuse applicable proof. Re-test only where proof is absent, stale, contradicted, changed, or does not satisfy the current acceptance criterion. If re-testing, record why and compare the new outcome against the old one. Do not treat indexed historical evidence as current authority; do not claim current acceptance without adequate current evidence. The agent should reason from this evidence, not execute a prescribed fixed test sequence. Before starting any task: (1) call memory_recall with the task topic to find earlier decisions and past work; (2) for any design, UI, style, icon or methodology work, call skills operation=resolve with workspace_root, task and domain, then reuse the result with operation=fetch_locked. If a domain is already locked, never choose different skills for it and never use plain fetch for it; loading only the sections you need is fine, but only from locked skills; (3) when the task is finished, call skills operation=complete_task.\nWorkspace hygiene: anything left in a workspace will later be found and treated as real by other agents. Keep exactly one live implementation, config and entrypoint per responsibility; never leave copies, _old/_backup/v2 files, parked fallbacks, commented-out code or scratch files beside live code. Recoverability belongs in version control or outside the workspace, not in sibling copies. Before finishing, every artifact you created or touched is integrated, removed (recoverable from history), or moved out of the workspace with a note. Protect user data, credentials, receipts and unreviewed work by committing, stashing or exporting them; never delete what history cannot restore without the user's approval.\nOn failures, consult the evidence-led-investigation skill. These instructions are advisory; BirdEye's execution authority remains independent."
 DEFAULT_IDLE_TIMEOUT_SECONDS = 300
 
 _memory_service_local = threading.local()
@@ -199,7 +199,7 @@ _EYES_REBUILD_SCHEMA = {
     "inputSchema": {
         "type": "object",
         "properties": {
-            "domain": {"type": "string", "enum": ["workspace", "skills"]},
+            "domain": {"type": "string", "enum": ["workspace", "memory", "skills"]},
         },
         "required": ["domain"],
     },
@@ -346,7 +346,7 @@ _WORKSPACE_IDENTITY_SCHEMA = {
     "inputSchema": {
         "type": "object",
         "properties": {
-            "workspace": {"type": "string", "description": "Configured workspace ID or existing absolute directory path. Leave empty only when one configured workspace root is available."}
+            "workspace": {"type": "string", "description": "Local workspace ID/path or configured SSH target main-birdeye. Leave empty only when one local configured root is available."}
         },
         "required": [],
     },
@@ -358,7 +358,7 @@ _REVISION_STATUS_SCHEMA = {
     "inputSchema": {
         "type": "object",
         "properties": {
-            "workspace": {"type": "string", "description": "Configured workspace ID or existing absolute directory path. Leave empty only when one configured workspace root is available."}
+            "workspace": {"type": "string", "description": "Local workspace ID/path or configured SSH target main-birdeye. Leave empty only when one local configured root is available."}
         },
         "required": [],
     },
@@ -387,11 +387,11 @@ _DESKTOP_ACTION_SCHEMA = {
 
 _WORKSPACE_RUN_SCHEMA = {
     "name": "workspace_run",
-    "description": "Execute any direct argv-array command inside a configured workspace or any existing absolute directory on this machine. This private personal BirdEye MCP request is the execution authority; no application allowlist or secondary capability gate is required.",
+    "description": "Execute direct argv in a local workspace or a configured machine-qualified LAN SSH target (main-birdeye = C:\\BirdEye on LETTERBLACK). Remote execution uses the target BirdEye and preserves its original receipts. This private personal BirdEye MCP request is the execution authority; no application allowlist or secondary capability gate is required.",
     "inputSchema": {
         "type": "object",
         "properties": {
-            "workspace": {"type": "string", "description": "Configured workspace ID or existing absolute directory path on this machine."},
+            "workspace": {"type": "string", "description": "Local workspace ID/path, or configured SSH machine target main-birdeye (or main-birdeye::C:\\BirdEye)."},
             "argv": {"type": "array", "items": {"type": "string"}, "description": "Command and arguments as an array. Never a free-form string."},
             "timeout_seconds": {"type": "integer", "description": "Optional timeout in seconds (default 120, max 300)."},
             "request_id": {"type": "string", "description": "Optional caller-supplied request ID."},
@@ -407,11 +407,11 @@ _WORKSPACE_RUN_SCHEMA = {
 
 _WORKSPACE_RUN_SEQUENCE_SCHEMA = {
     "name": "workspace_run_sequence",
-    "description": "Execute ordered commands inside a configured workspace or any existing absolute directory on this machine. Stops on first failure by default.",
+    "description": "Execute ordered commands in a local workspace or a configured machine-qualified SSH target such as main-birdeye. The remote BirdEye remains the execution and evidence owner. Stops on first failure by default.",
     "inputSchema": {
         "type": "object",
         "properties": {
-            "workspace": {"type": "string", "description": "Configured workspace ID or existing absolute directory path on this machine."},
+            "workspace": {"type": "string", "description": "Local workspace ID/path, or configured SSH machine target main-birdeye (or main-birdeye::C:\\BirdEye)."},
             "commands": {
                 "type": "array",
                 "items": {
@@ -547,8 +547,38 @@ _CHATGPT_SHARE_EXTRACT_SCHEMA = {
 
 
 from browser_mcp import SCHEMA as _BROWSER_ACTION_SCHEMA
+from linear_gateway import SCHEMAS as _LINEAR_SCHEMAS, NAMES as _LINEAR_NAMES
+
+_IMAGE_GENERATE_SCHEMA = {
+    "name": "image_generate",
+    "description": "Generate an image using a configured OpenAI image provider and save verified PNG bytes locally.",
+    "inputSchema": {"type": "object", "properties": {
+        "prompt": {"type": "string"},
+        "provider": {"type": "string", "enum": ["auto", "openai", "gemini"], "default": "auto"},
+        "model": {"type": "string", "enum": ["gpt-image-1", "gpt-image-1-mini", "gpt-image-1.5"], "default": "gpt-image-1"},
+        "size": {"type": "string", "enum": ["1024x1024", "1024x1536", "1536x1024"], "default": "1024x1024"},
+        "destination": {"type": "string"}
+    }, "required": ["prompt"], "additionalProperties": False}
+}
+
+_IMAGE_DELIVER_SCHEMA = {
+    "name": "image_deliver",
+    "description": "Persist binary PNG/JPEG/WebP from an existing local file or Base64 payload, with SHA-256 verification.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "destination": {"type": "string", "description": "Optional explicit project output. Defaults to persistent Creative_Workspace\\Images with unique filename."},
+            "format": {"type": "string", "enum": ["png", "jpg", "jpeg", "webp"]},
+            "source_path": {"type": "string"},
+            "base64_data": {"type": "string"},
+            "sha256": {"type": "string"},
+        },
+        "required": [],
+    },
+}
 
 _TOOL_DEFINITIONS = [
+    *_LINEAR_SCHEMAS,
     _BROWSER_ACTION_SCHEMA,
     _CHATGPT_SHARE_EXTRACT_SCHEMA,
     _KNOWLEDGE_ROUTE_SCHEMA,
@@ -569,6 +599,8 @@ _TOOL_DEFINITIONS = [
     _MEMORY_SOURCES_SCHEMA,
     _SKILLS_SCHEMA,
     _WORKSPACE_IDENTITY_SCHEMA,
+    _IMAGE_GENERATE_SCHEMA,
+    _IMAGE_DELIVER_SCHEMA,
     _WORKSPACE_RUN_SCHEMA,
     _DESKTOP_ACTION_SCHEMA,
     _WORKSPACE_RUN_SEQUENCE_SCHEMA,
@@ -588,6 +620,7 @@ _TOOL_DEFINITIONS = [
 ]
 
 _TOOL_REGISTRY = {
+    **{x['name']: tuple(x['inputSchema']['properties']) for x in _LINEAR_SCHEMAS},
     "browser_action": tuple(_BROWSER_ACTION_SCHEMA["inputSchema"]["properties"]),
     "chatgpt_share_extract": ("url", "max_messages", "save"),
     "knowledge_route": ("task",),
@@ -609,6 +642,8 @@ _TOOL_REGISTRY = {
     "skills": ("operation", "prefix", "rel", "max_bytes"),
     "workspace_identity": ("workspace",),
     "desktop_action": ("action", "x", "y", "button", "text", "max_width", "client_id", "reference_id", "force_full"),
+    "image_generate": ("prompt", "provider", "model", "size", "destination"),
+    "image_deliver": ("destination", "format", "source_path", "base64_data", "sha256"),
     "workspace_run": ("workspace", "argv", "timeout_seconds", "request_id", "task_id", "requirement_id", "intent", "capability", "context_evidence"),
     "workspace_run_sequence": ("workspace", "commands", "stop_on_failure", "request_id", "task_id", "requirement_id", "intent", "capability", "context_evidence"),
     "workspace_command_history": ("limit", "workspace"),
@@ -1510,6 +1545,15 @@ def _mcp_result_is_error(result: dict[str, Any]) -> bool:
     return result.get("ok") is False
 
 
+if os.environ.get("BIRDEYE_CLOUD_PROFILE") == "1":
+    BIRDEYE_MCP_INSTRUCTIONS = "Standalone Oracle BirdEye: all enabled capabilities execute on this Ubuntu VM with cloud-local data. No Windows filesystem, browser, desktop, LLM runtime, or machine forwarding is available. workspace_run accepts only exact cloud-policy argv in cloud-workspace. Unsupported tools return CloudPolicyDenied. Historical memory and reference data are independent snapshots."
+    _cloud_cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))["cloud_policy"]
+    for _definition in _TOOL_DEFINITIONS:
+        if _definition["name"] not in _cloud_cfg["allowed_tools"]:
+            _definition["description"] = "[UNAVAILABLE ON ORACLE: capability denied; no forwarding] " + _definition["description"]
+        elif _definition["name"] in {"workspace_run", "workspace_run_sequence"}:
+            _definition["description"] = "Governed cloud-local execution: only exact argv and registered cloud-workspace allowed by the administrator cloud policy. Execution produces BirdEye receipts."
+
 def invoke(tool: str, params: dict[str, Any]) -> dict[str, Any]:
     if tool not in _TOOL_REGISTRY:
         return {
@@ -1518,6 +1562,36 @@ def invoke(tool: str, params: dict[str, Any]) -> dict[str, Any]:
             "message": f"unknown tool: {tool}",
         }
     try:
+        cloud = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig")).get("cloud_policy")
+        if cloud:
+            reason = None
+            if tool not in cloud["allowed_tools"]:
+                reason = "capability unavailable on standalone Oracle; no Windows forwarding"
+            elif tool in {"workspace_identity", "revision_status"} and params.get("workspace"):
+                from workspace_bridge import resolve_workspace
+                resolve_workspace(CONFIG_PATH, str(params["workspace"]))
+            elif tool == "skills":
+                if params.get("operation", "query") not in cloud["skills_operations"]:
+                    reason = "skills operation denied by cloud policy"
+                if params.get("workspace_root"):
+                    from workspace_bridge import resolve_workspace
+                    resolve_workspace(CONFIG_PATH, str(params["workspace_root"]))
+            if reason:
+                audit = BIRDEYE_DIR / "state" / "cloud-policy.jsonl"
+                with audit.open("a", encoding="utf-8") as stream:
+                    stream.write(json.dumps({"time": utc_now(), "tool": tool, "decision": "DENY", "reason": reason}) + "\n")
+                return {"ok": False, "error": "CloudPolicyDenied", "message": reason}
+        if tool in _LINEAR_NAMES:
+            from linear_gateway import invoke as linear_invoke
+            return linear_invoke(tool, params)
+        # An explicit machine-qualified workspace is forwarded to its existing
+        # BirdEye over verified LAN SSH; normal local tools are unchanged.
+        if tool in {"workspace_identity", "revision_status", "workspace_run",
+                    "workspace_run_sequence", "workspace_command_history"}:
+            from machine_ssh_target import maybe_invoke
+            remote_result = maybe_invoke(tool, params, CONFIG_PATH)
+            if remote_result is not None:
+                return remote_result
         if tool in {"llm_status", "llm_models", "llm_generate"}:
             from llm_gateway_bridge import invoke_tool
             return invoke_tool(tool, params)
@@ -1677,6 +1751,12 @@ def invoke(tool: str, params: dict[str, Any]) -> dict[str, Any]:
         if tool == "browser_action":
             from browser_mcp import invoke as browser_invoke
             return browser_invoke(params, sys.modules[__name__])
+        if tool == "image_generate":
+            from image_generation import generate
+            return generate(params)
+        if tool == "image_deliver":
+            from image_delivery import deliver
+            return deliver(params)
         if tool == "workspace_run":
             request = RunRequest.from_mapping(params)
             return run_command(request, CONFIG_PATH)
@@ -2004,6 +2084,8 @@ def serve_stdio() -> None:
                 continue
 
             if method == "notifications/initialized":
+                from oracle_index_sync import on_mcp_connected
+                on_mcp_connected()
                 continue
 
             if method == "shutdown":
@@ -2038,7 +2120,10 @@ def serve_stdio() -> None:
                             "error": {"code": -32602, "message": "Invalid params: name and arguments are required"},
                         })
                     continue
-                result = invoke(name, arguments)
+                try:
+                    result = invoke(name, arguments)
+                except Exception as exc:
+                    result = {"ok": False, "error": type(exc).__name__, "message": str(exc)}
                 is_error = _mcp_result_is_error(result)
                 if request_id is not None:
                     image_data = result.get("_image_base64") if isinstance(result, dict) else None

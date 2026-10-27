@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $existing = @(Get-CimInstance Win32_Process -Filter "name='ssh.exe'" | Where-Object { $_.CommandLine -like '*127.0.0.1:18766:127.0.0.1:8766*' -and $_.CommandLine -like '*ubuntu@10.77.0.1*' })
 if ($existing.Count -gt 0) { Write-Output "EXISTING_TUNNEL=$($existing[0].ProcessId)"; exit 0 }
-$vpn = Get-Service 'WireGuardTunnel$birdeye-oracle' -ErrorAction SilentlyContinue
+$vpn = Get-Service 'WireGuardTunnel$birdeye-oracle-mini' -ErrorAction SilentlyContinue
 if (-not $vpn -or $vpn.Status -ne 'Running') { throw 'WireGuard is not running' }
 if (-not (Test-NetConnection 10.77.0.1 -Port 22 -InformationLevel Quiet -WarningAction SilentlyContinue)) { throw 'Oracle VPN SSH unreachable' }
 if (-not (Test-NetConnection 127.0.0.1 -Port 8766 -InformationLevel Quiet -WarningAction SilentlyContinue)) { throw 'BirdEye MCP unavailable' }

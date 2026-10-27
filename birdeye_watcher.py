@@ -213,6 +213,8 @@ def start_watcher(ctx: Context, selected: set[str] | None = None):
     when the stdio server is launched, rather than requiring a separate
     permanently running process.
     """
+    if selected is None and os.environ.get("BIRDEYE_CLOUD_PROFILE") == "1":
+        selected = {"cloud-workspace"}
     selected = selected or {root.name for root in ctx.roots}
     roots = [root for root in ctx.roots if root.name in selected and root.path.is_dir()]
     if not roots:

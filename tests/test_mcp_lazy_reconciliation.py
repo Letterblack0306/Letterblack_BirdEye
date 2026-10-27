@@ -54,8 +54,12 @@ def test_inspect_root_extraction():
     assert mcp_server._root_from_virtual_path("a/src/file.py") == "a"
 
 
-def test_birdeye_search_uses_migrated_query_database_without_legacy_reconcile(monkeypatch):
+def test_birdeye_search_uses_migrated_query_database_without_legacy_reconcile(monkeypatch, tmp_path):
     events = []
+    # Search must use the existing EYES query projection without a synchronous
+    # full reindex on every query. The watcher owns normal incremental freshness.
+    (tmp_path / "eye_workspace_query_01.db").touch()
+    monkeypatch.setattr(mcp_server, "EYE_DATABASE_DIR", tmp_path)
 
     monkeypatch.setattr(
         mcp_server,
@@ -73,7 +77,7 @@ def test_birdeye_search_uses_migrated_query_database_without_legacy_reconcile(mo
     result = mcp_server.birdeye_search("needle", roots="a")
 
     assert result["ok"] is True
-    assert events == [("eyes", ("a",)), ("search", ("a",))]
+    assert events == [("search", ("a",))]
 
 
 def test_birdeye_search_without_explicit_roots_does_not_global_reconcile(monkeypatch):

@@ -151,7 +151,14 @@ def resolve_workspace(config_path: Path, name: str) -> Workspace:
     config.json.
     """
     normalized = name.strip().lower()
+    policy = json.loads(config_path.read_text(encoding="utf-8-sig")).get("cloud_policy")
     workspaces = load_workspaces(config_path)
+    if policy:
+        for item in workspaces:
+            if normalized == item.name or name == str(item.path):
+                if item.path.is_dir():
+                    return item
+        raise BridgeError("CLOUD_POLICY_DENY: workspace must be an explicitly registered cloud root")
     for workspace in workspaces:
         if workspace.name == normalized:
             if not workspace.path.is_dir():
@@ -698,6 +705,15 @@ def _authority_gate(
     context_evidence remain accepted for backward compatibility and receipts,
     but they never gate execution.
     """
+    policy = json.loads(config_path.read_text(encoding="utf-8-sig")).get("cloud_policy")
+    if policy:
+        allowed = list(argv) in policy.get("allowed_argv", []) and workspace.name == "cloud-workspace"
+        path = _journal_path(config_path).parent / "cloud-policy.jsonl"
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"time": utc_now(), "tool": "workspace_run", "decision": "ALLOW" if allowed else "DENY",
+                                    "workspace": workspace.name, "argv_sha256": hashlib.sha256(json.dumps(list(argv)).encode()).hexdigest()}) + "\n")
+        if not allowed:
+            raise BridgeError("CLOUD_POLICY_DENY: command is not an exact authorized argv for cloud-workspace")
     resolved_intent = _intent_for(argv, intent)
     return {
         "authority": "birdeye-mcp-user",
@@ -772,7 +788,7 @@ def _execute_argv(
         head_before, head_ok = _git_head(workspace.path)
 
     diff_before = capture_diff_state(workspace.path)
-    if history is not None and diff_before.get("is_repository"):
+    if history is not None and diff_before.get("verified", True) and diff_before.get("is_repository"):
         history.emit("git.before_evidence",
                      diff_state_sha256=diff_before["diff_state_sha256"],
                      head=diff_before["head"],
@@ -846,7 +862,7 @@ def _execute_argv(
                          timed_out=timed_out,
                          stdout_sha256=hashlib.sha256((stdout or "").encode("utf-8")).hexdigest(),
                          stderr_sha256=hashlib.sha256((stderr or "").encode("utf-8")).hexdigest())
-            if diff_after.get("is_repository"):
+            if diff_after.get("verified", True) and diff_after.get("is_repository"):
                 history.emit("git.after_evidence",
                              diff_state_sha256=diff_after["diff_state_sha256"],
                              head=diff_after["head"],
@@ -864,8 +880,12 @@ def _execute_argv(
             before=diff_before if diff_before.get("is_repository") else empty_diff_state(),
             after=diff_after if diff_after.get("is_repository") else empty_diff_state(),
         )
-    except (OSError, ValueError) as exc:
-        result["execution_evidence"] = {"error": f"EVIDENCE_CAPTURE_FAILED: {exc}"}
+    except (OSError, ValueError, TimeoutError) as exc:
+        result["execution_evidence"] = {
+            "evidence_status": "UNVERIFIED",
+            "overall_evidence": "UNVERIFIED",
+            "error": f"EVIDENCE_CAPTURE_FAILED: {exc}",
+        }
 
     _append_journal(
         config_path,
@@ -919,7 +939,7 @@ def run_command(request: RunRequest, config_path: Path) -> dict[str, Any]:
     )
     result["authority"] = gate
     result["reconciliation"] = {
-        "performed": isinstance(result.get("execution_evidence"), dict),
+        "performed": (result.get("execution_evidence") or {}).get("evidence_status") == "VERIFIED",
         "source": "runtime",
         "changed": bool((result.get("execution_evidence") or {}).get("workspace_changed_by_command", False)),
     }

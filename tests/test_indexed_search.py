@@ -122,3 +122,25 @@ def test_search_freshness_refreshes_changed_indexed_file(tmp_path, monkeypatch):
     connection.close()
     assert row["content"] == "authorization resolver"
     assert row["sha256"] == item["sha256"]
+
+def test_cloud_search_uses_projection_without_opening_legacy_database(tmp_path, monkeypatch):
+    import eye_query
+
+    _use_database(tmp_path, monkeypatch)
+    context = _context(tmp_path)
+    source = context.roots[0].path / "cloud.txt"
+    source.write_text("canonical cloud search needle", encoding="utf-8")
+    agent.trace_workspace(context)
+    open_projection = agent.open_database
+    monkeypatch.setenv("BIRDEYE_CLOUD_PROFILE", "1")
+    monkeypatch.setattr(eye_query, "connect_query", lambda domain: open_projection())
+    monkeypatch.setattr(eye_query, "initialize_workspace_query", lambda connection: None)
+
+    def forbidden_legacy_open():
+        raise AssertionError("cloud search must not use the legacy database")
+
+    monkeypatch.setattr(agent, "open_database", forbidden_legacy_open)
+    result = agent.search_workspace(context, "canonical cloud search needle")
+    assert result["result_count"] == 1
+    assert result["results"][0]["path"] == "demo/cloud.txt"
+    assert "canonical cloud search needle" in result["results"][0]["snippet"]

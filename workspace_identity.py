@@ -61,19 +61,23 @@ def _workspace_root(ctx: Context, workspace: str | None = None):
 
 
 def _git(path: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    process = subprocess.run(
-        ["git", "-C", str(path), *args],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=_GIT_TIMEOUT_SECONDS,
-        shell=False,
-        check=False,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    command = ["git", "-C", str(path), *args]
+    proc = subprocess.Popen(
+        command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+        shell=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
+    try:
+        stdout, stderr = proc.communicate(timeout=_GIT_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        from execution_evidence import _kill_tree
+        _kill_tree(proc)
+        try:
+            proc.communicate(timeout=5)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        raise
+    process = subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
     if check and process.returncode != 0:
         message = process.stderr.strip() or process.stdout.strip() or "git command failed"
         raise GovernanceError(message)
@@ -85,8 +89,9 @@ def _git_value(path: Path, *args: str) -> str:
 
 
 def _git_repository(path: Path) -> bool:
-    result = _git(path, "rev-parse", "--is-inside-work-tree", check=False)
-    return result.returncode == 0 and result.stdout.strip().lower() == "true"
+    result = _git(path, "rev-parse", "--show-toplevel", check=False)
+    # A registered subfolder must not inherit an unrelated ancestor repository.
+    return result.returncode == 0 and Path(result.stdout.strip()).resolve() == path.resolve()
 
 
 def _branch_and_head(path: Path) -> tuple[str | None, str | None, bool]:

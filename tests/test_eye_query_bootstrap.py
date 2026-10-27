@@ -151,3 +151,11 @@ def test_b7_empty_canonical_state_has_no_fabricated_rows_and_truthful_lag(tmp_pa
         "applied_generation": 7, "lag": 0, "replayed": 0, "bootstrap": True,
     }
     assert _query_files() == []
+
+
+def test_mcp_eyes_rebuild_schema_advertises_existing_memory_projection():
+    import mcp_server
+
+    schema = next(tool for tool in mcp_server._TOOL_DEFINITIONS if tool["name"] == "eyes_rebuild")
+    domains = schema["inputSchema"]["properties"]["domain"]["enum"]
+    assert domains == ["workspace", "memory", "skills"]

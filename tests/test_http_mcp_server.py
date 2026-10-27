@@ -51,6 +51,12 @@ class BirdEyeHttpTransportTests(unittest.TestCase):
         self.assertIn("workspace_run", expected)
         self.assertIn("workspace_run_sequence", expected)
 
+    def test_internal_ingestion_is_only_advertised_by_cloud_profile(self):
+        with patch.object(self.mod, "CLOUD_PROFILE", False):
+            self.assertNotIn("remote_index_ingest", self.mod._tool_names())
+        with patch.object(self.mod, "CLOUD_PROFILE", True):
+            self.assertIn("remote_index_ingest", self.mod._tool_names())
+
     def test_non_loopback_bind_is_rejected(self):
         with patch.dict(
             os.environ,

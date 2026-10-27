@@ -91,12 +91,17 @@ def test_memory_root_loads_declarative_source_paths_and_indexes_under_one_namesp
     }
 
 
-def test_production_config_has_one_memory_root():
+def test_production_config_has_one_canonical_memory_root_and_historical_agent_roots():
     context = agent.Context.load()
     memory_roots = [root for root in context.roots if root.root_class == "memory"]
+    canonical = [root for root in memory_roots if root.name == "memory"]
 
-    assert [root.name for root in memory_roots] == ["memory"]
-    assert {source.name for source in memory_roots[0].sources} >= {
+    # One canonical Memory namespace, with separate historical agent inputs.
+    assert len(canonical) == 1
+    assert len({root.name for root in memory_roots}) == len(memory_roots)
+    assert all(root.authority == "historical" for root in memory_roots)
+    assert all(root.source_class == "historical-memory" for root in memory_roots)
+    assert {source.name for source in canonical[0].sources} >= {
         "chatgpt", "cline", "codex", "claude", "gemini", "antigravity", "birdeye",
     }
 
@@ -204,3 +209,24 @@ def test_historical_root_hashes_new_files_and_reuses_unchanged_files(tmp_path, m
     connection.close()
     assert row["sha256"] == agent.sha256_file(session_file)
     assert row["hash_status"] == "hashed"
+
+def test_database_status_does_not_write_registry_when_index_is_locked(tmp_path, monkeypatch):
+    root = tmp_path / "memory"
+    root.mkdir()
+    config = _context_config(tmp_path, [{"id": "memory", "path": str(root), "class": "memory", "authority": "historical"}])
+    monkeypatch.setattr(agent, "CONFIG_PATH", config)
+    monkeypatch.setattr(agent, "GOVERNANCE_PATH", tmp_path / "governance.json")
+    monkeypatch.setattr(agent, "STATE_DIR", tmp_path / "state")
+    monkeypatch.setattr(agent, "DATABASE_PATH", tmp_path / "state" / "workspace.db")
+    (tmp_path / "governance.json").write_text("{}", encoding="utf-8")
+    connection = agent.open_database()
+    connection.close()
+    # This should never be invoked for an established index status read.
+    def forbidden_write(*args, **kwargs):
+        raise AssertionError("A status read must not reconcile or write registry state")
+    monkeypatch.setattr(agent, "open_database", forbidden_write)
+    monkeypatch.setattr(agent, "sync_root_registry", forbidden_write)
+    result = agent.database_status()
+    assert len(result["roots"]) == 1
+    assert result["roots"][0]["status"] == "PARTIAL"
+    assert not (tmp_path / "state" / "workspace.db-journal").exists()

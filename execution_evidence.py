@@ -43,9 +43,14 @@ def _canonical_sha256(value: Any) -> str:
     return _sha256_text(json.dumps(value, sort_keys=True, ensure_ascii=False))
 
 
+class EvidenceCaptureError(RuntimeError):
+    """Git evidence could not be observed completely."""
+
+
 def _git(root: Path, *args: str, timeout: int = 30) -> tuple[int, str]:
+    proc = None
     try:
-        completed = subprocess.run(
+        proc = subprocess.Popen(
             ["git", "-C", str(root), *args],
             cwd=str(root),
             stdin=subprocess.DEVNULL,
@@ -54,26 +59,46 @@ def _git(root: Path, *args: str, timeout: int = 30) -> tuple[int, str]:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout,
             shell=False,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
-        return completed.returncode, completed.stdout
-    except (subprocess.TimeoutExpired, OSError):
-        return 1, ""
+        stdout, _ = proc.communicate(timeout=timeout)
+        return proc.returncode, stdout
+    except subprocess.TimeoutExpired as exc:
+        if proc is not None:
+            _kill_tree(proc)
+            try:
+                proc.communicate(timeout=5)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+        raise EvidenceCaptureError(f"git {args[0]} timed out after {timeout}s") from exc
+    except OSError as exc:
+        raise EvidenceCaptureError(f"git {args[0]} could not run: {exc}") from exc
+
+
+def _required_git(root: Path, *args: str) -> str:
+    code, output = _git(root, *args)
+    if code != 0:
+        raise EvidenceCaptureError(f"git {args[0]} failed with exit code {code}")
+    return output
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:
     """Kill git and its children (the Windows git.exe shim spawns a child)."""
-    try:
-        if proc.poll() is None and hasattr(subprocess, "CREATE_NO_WINDOW"):
+    if proc.poll() is not None:
+        return
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        try:
             subprocess.run(
                 ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW, timeout=10,
             )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    try:
         proc.kill()
-    except Exception:
+    except OSError:
         pass
 
 
@@ -83,21 +108,32 @@ def is_git_repository(root: Path) -> bool:
 
 
 def _changed_paths(root: Path) -> list[str]:
-    code, out = _git(root, "status", "--porcelain")
-    if code != 0:
-        return []
+    out = _required_git(root, "status", "--porcelain")
     return [line[3:].strip().strip('"') for line in out.splitlines() if len(line) >= 4]
 
 
 def capture_diff_state(root: Path) -> dict[str, Any]:
+    """Capture Git state, or explicitly mark incomplete evidence unverified."""
+    try:
+        return _capture_diff_state(root)
+    except (EvidenceCaptureError, OSError, subprocess.TimeoutExpired) as exc:
+        return {
+            "is_repository": True,
+            "verified": False,
+            "error": f"EVIDENCE_CAPTURE_FAILED: {exc}",
+            "changed_paths": [],
+        }
+
+
+def _capture_diff_state(root: Path) -> dict[str, Any]:
     """Deterministic canonical local-diff identity for a Git worktree."""
     if not is_git_repository(root):
         return {"is_repository": False}
 
-    _, head = _git(root, "rev-parse", "HEAD")
-    _, branch_out = _git(root, "rev-parse", "--abbrev-ref", "HEAD")
-    _, unstaged = _git(root, "diff", "--no-ext-diff")
-    _, staged = _git(root, "diff", "--cached", "--no-ext-diff")
+    head = _required_git(root, "rev-parse", "HEAD")
+    branch_out = _required_git(root, "rev-parse", "--abbrev-ref", "HEAD")
+    unstaged = _required_git(root, "diff", "--no-ext-diff")
+    staged = _required_git(root, "diff", "--cached", "--no-ext-diff")
 
     untracked: list[dict[str, str]] = []
     truncated = False
@@ -136,7 +172,7 @@ def capture_diff_state(root: Path) -> dict[str, Any]:
             proc.wait(timeout=5)
         if proc.returncode not in (0, None) and not truncated:
             truncated = True  # killed by budget timer or git error: listing incomplete
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         lines = []
         truncated = True
     finally:
@@ -169,6 +205,7 @@ def capture_diff_state(root: Path) -> dict[str, Any]:
     }
     return {
         "is_repository": True,
+        "verified": not truncated,
         "head": canonical["head"],
         "branch": branch_out.strip() or None,
         "changed_paths": _changed_paths(root),
@@ -183,6 +220,7 @@ def capture_diff_state(root: Path) -> dict[str, Any]:
 def empty_diff_state() -> dict[str, Any]:
     return {
         "is_repository": False,
+        "verified": True,
         "head": None,
         "branch": None,
         "changed_paths": [],
@@ -219,7 +257,10 @@ def build_execution_receipt(
         or bool(removed)
     )
 
+    evidence_verified = before.get("verified", True) and after.get("verified", True)
     canonical_receipt = {
+        "evidence_status": "VERIFIED" if evidence_verified else "UNVERIFIED",
+        "evidence_errors": [state["error"] for state in (before, after) if state.get("error")],
         "command_hash": command_hash,
         "argv": list(argv),
         "exit_code": exit_code,
@@ -243,7 +284,8 @@ def build_execution_receipt(
         "changed_paths_after": sorted(after_paths)[:_MAX_RECEIPT_PATHS],
         "changed_paths_after_count": len(after_paths),
         "overall_evidence": (
-            "REVIEW" if (exit_code == 0 and changed_by_command)
+            "UNVERIFIED" if not evidence_verified
+            else "REVIEW" if (exit_code == 0 and changed_by_command)
             else (
                 "PARTIAL" if (exit_code == 0 and (before.get("untracked_truncated") or after.get("untracked_truncated")))
                 else ("PROVEN" if exit_code == 0 else "FAILED")

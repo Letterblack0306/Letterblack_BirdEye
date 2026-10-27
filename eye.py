@@ -60,7 +60,16 @@ def load_config() -> dict[str, Any]:
     if not isinstance(skills_root, dict):
         raise EyeConfigError("eye_skills.json root must be an object")
 
-    roots = [*workspace_roots, memory_root, skills_root]
+    shared = Path('/home/ubuntu/birdeye-control/indexing')
+    declared = _read_json(shared / 'sources.json')['sources'] if (shared / 'sources.json').is_file() else []
+    remote_roots = []
+    for source in declared:
+        if not source.get('enabled', True): continue
+        remote_roots.append({**source, 'id':source['key'], 'class':'workspace',
+            'path':str(shared/'content'/source['machine']/source['id']),
+            'remote_machine':source['machine'], 'remote_source_id':source['id'],
+            'remote_source_path':source['path'], 'read_only':True})
+    roots = [*workspace_roots, *remote_roots, memory_root, skills_root]
     ids = [root.get("id") for root in roots if isinstance(root, dict)]
     if any(not isinstance(root, dict) for root in roots):
         raise EyeConfigError("EYES roots must contain only objects")

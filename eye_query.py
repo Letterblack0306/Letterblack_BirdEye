@@ -205,6 +205,20 @@ def read_applied_generation(conn: sqlite3.Connection) -> int:
     return int(row[0]) if row else 0
 
 
+def _project_remote_metadata(conn, row, root_name, projection_path, now, generation):
+    conn.execute(
+      "INSERT INTO files(root,path,physical_path,size,modified_ns,sha256,content,hash_status,error,first_seen_at,last_seen_at,last_seen_run,extension,file_type,line_count,token_count,feature_terms) "
+      "VALUES(?,?,?,?,?,NULL,NULL,?,?,?,?,?,?,?,0,0,'[]') "
+      "ON CONFLICT(root,path) DO UPDATE SET physical_path=excluded.physical_path,size=excluded.size,modified_ns=excluded.modified_ns,sha256=NULL,content=NULL,hash_status=excluded.hash_status,error=excluded.error,last_seen_at=excluded.last_seen_at,last_seen_run=excluded.last_seen_run",
+      (root_name,projection_path,row["physical_path"],row["size"],row["modified_ns"],row["hash_status"],row["error"],now,now,"remote-metadata:"+str(generation),Path(projection_path).suffix.lower(),"file"))
+
+
+def _canonical_features(row, content, extension):
+    if str(row["source_id"]).startswith(("main--","mini--")):
+        return (row["file_type"] or extension.lstrip("."),row["line_count"] or 0,row["token_count"] or 0,row["feature_terms"] or "[]")
+    return _query_text_features(content,extension)
+
+
 def _project_current_files(
     query_conn: sqlite3.Connection,
     data_conn: sqlite3.Connection,
@@ -223,12 +237,17 @@ def _project_current_files(
     now = utc_now()
     projected = 0
     rows = data_conn.execute(
-        "SELECT source_id, relative_path, physical_path, size, modified_ns, "
-        "sha256, hash_status, error FROM files WHERE domain=? "
+        "SELECT * FROM files WHERE domain=? "
         "ORDER BY source_id, relative_path",
         (domain,),
     ).fetchall()
     for row in rows:
+        if str(row["physical_path"]).startswith("remote://"):
+            root_name=safe_root_name(row["source_id"])
+            relative=str(row["relative_path"]).replace("\\","/")
+            _project_remote_metadata(query_conn,row,root_name,root_name+"/"+relative,now,canonical_generation)
+            projected+=1
+            continue
         physical = Path(row["physical_path"]) if row["physical_path"] else None
         if physical is None or not physical.is_file():
             continue
@@ -266,7 +285,7 @@ def _project_current_files(
         root_name = safe_root_name(row["source_id"])
         relative = str(row["relative_path"]).replace("\\", "/")
         projection_path = root_name if relative == "." else f"{root_name}/{relative}"
-        file_type, line_count, token_count, feature_terms = _query_text_features(
+        file_type, line_count, token_count, feature_terms = _canonical_features(row,
             content or "", Path(relative).suffix.lower()
         )
         query_conn.execute(
@@ -438,10 +457,14 @@ def project_pending_changes(domain: str, number: int = 1) -> dict[str, Any]:
                 replayed += 1
                 continue
             file_row = data_conn.execute(
-                "SELECT physical_path FROM files "
+                "SELECT * FROM files "
                 "WHERE domain=? AND source_id=? AND relative_path=?",
                 (domain, source_id, relative),
             ).fetchone()
+            if file_row and str(file_row["physical_path"]).startswith("remote://"):
+                _project_remote_metadata(query_conn,file_row,root_name,proj_path,now,canonical)
+                replayed+=1
+                continue
             physical = Path(file_row["physical_path"]) if file_row else None
             if physical is None or not physical.is_file():
                 query_conn.execute(
@@ -454,7 +477,7 @@ def project_pending_changes(domain: str, number: int = 1) -> dict[str, Any]:
             content = raw.decode("utf-8", errors="ignore")
             digest = hashlib.sha256(raw).hexdigest()
             extension = physical.suffix.lower()
-            file_type, line_count, token_count, feature_terms = _query_text_features(content, extension)
+            file_type, line_count, token_count, feature_terms = _canonical_features(file_row,content, extension)
             existing = query_conn.execute(
                 "SELECT first_seen_at FROM files WHERE root=? AND path=?",
                 (root_name, proj_path),
