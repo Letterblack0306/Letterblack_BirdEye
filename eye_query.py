@@ -538,9 +538,25 @@ def _read_canonical_generation(domain: str, number: int = 1) -> int:
         conn.close()
 
 
+def _projection_metadata_ready(domain: str, number: int = 1) -> bool:
+    """Read-only health: missing metadata is an unverified projection."""
+    query_path = path(domain, "query", number)
+    if not query_path.is_file():
+        return False
+    try:
+        with sqlite3.connect(query_path.as_uri() + "?mode=ro", uri=True, timeout=3) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone():
+                return False
+            return db.execute("SELECT 1 FROM meta WHERE key='applied_generation'").fetchone() is not None
+    except (sqlite3.DatabaseError, OSError):
+        return False
+
+
 def _read_applied_generation(domain: str, number: int = 1) -> int:
     query_path = path(domain, "query", number)
     if not query_path.exists():
+        return 0
+    if not _projection_metadata_ready(domain, number):
         return 0
     conn = sqlite3.connect(str(query_path), timeout=60)
     try:
@@ -693,12 +709,14 @@ def health() -> dict[str, Any]:
         canonical = _read_canonical_generation(domain)
         applied = _read_applied_generation(domain)
         lag = canonical - applied
+        metadata_ready = _projection_metadata_ready(domain)
         report[domain] = {
             "canonical_generation": canonical,
             "applied_generation": applied,
             "lag": max(lag, 0),
+            "projection_metadata_verified": metadata_ready,
             "journal_replayable": bool(
-                lag == 0
+                metadata_ready and lag == 0
                 and path(domain, "data").exists()
                 and (
                     domain != "memory"
@@ -707,10 +725,11 @@ def health() -> dict[str, Any]:
             ),
             "rebuildable": True,
             "projection_owner": "Memory deterministic vector projector" if domain == "memory" else "EYES query projector",
-            "reason": None if lag == 0 else "projection is behind canonical generation",
+            "reason": ("projection metadata absent or unreadable" if not metadata_ready
+                       else None if lag == 0 else "projection is behind canonical generation"),
         }
     return {
         "ok": True,
         "domains": report,
-        "generation_lag_zero": all(entry.get("lag", 0) == 0 for entry in report.values()),
+        "generation_lag_zero": all(entry.get("lag", 0) == 0 and entry.get("projection_metadata_verified") for entry in report.values()),
     }

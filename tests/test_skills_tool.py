@@ -259,7 +259,15 @@ def test_memory_mcp_has_no_skill_tools():
     import asyncio
     import sys
 
-    memory_root = Path(r"C:\MCP Local\Memory")
+    import os
+    import pytest
+
+    configured = os.environ.get("BIRDEYE_TEST_MEMORY_ROOT")
+    if not configured:
+        pytest.skip("External Memory MCP checkout not configured for integration test")
+    memory_root = Path(configured).resolve()
+    if not (memory_root / "src" / "memory" / "mcp_server.py").is_file():
+        pytest.fail(f"Configured Memory MCP source is unavailable: {memory_root}")
     sys.path.insert(0, str(memory_root))
     sys.path.insert(0, str(memory_root / "src"))
     from memory.mcp_server import _make_mcp_server
