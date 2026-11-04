@@ -176,6 +176,17 @@ def _ack(path,result):
     temp.write_text(json.dumps(result,separators=(",",":")));os.chmod(temp,0o664);os.replace(temp,path)
 
 def consume_pending():
+    # Python versions differ in whether Path.glob silently ignores EACCES.
+    # Do not interpret an inaccessible shared queue as "no work pending".
+    try:
+        with os.scandir(SHARED / "results"):
+            pass
+    except OSError as exc:
+        raise RuntimeError(
+            "Oracle index queue inaccessible to the MCP runtime account "
+            f"({type(exc).__name__}); verify parent-directory traverse and "
+            "results-directory read permissions before replay"
+        ) from exc
     processed=0
     for ready in sorted((SHARED/"results").glob("*.ready"),key=lambda p:p.stat().st_mtime):
         ack=SHARED/"acks"/(ready.stem+".json")
