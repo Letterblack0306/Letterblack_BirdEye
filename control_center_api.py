@@ -229,7 +229,9 @@ async def workspace(request):
 def recent_receipts(workspace_id: str = "", limit: int = 24) -> dict:
     folder = STATE / "executions"
     if not folder.exists():
-        return {"ok": True, "records": [], "scanned": 0}
+        return {"ok": True, "records": [], "scanned": 0, "scan_limit": 2500,
+                "limited": False, "observed_at": utc_now(),
+                "source": "state/executions/*/receipt.json"}
     try:
         directories = sorted((p for p in folder.iterdir() if p.is_dir() and RECEIPT_ID.fullmatch(p.name)),
                              key=lambda p: p.name, reverse=True)
