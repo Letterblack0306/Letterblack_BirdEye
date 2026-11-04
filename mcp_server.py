@@ -1757,6 +1757,11 @@ def invoke(tool: str, params: dict[str, Any]) -> dict[str, Any]:
         if tool == "image_deliver":
             from image_delivery import deliver
             return deliver(params)
+        if tool in {"workspace_run", "workspace_run_sequence"}:
+            from component_reuse import check_request as check_component_request
+            component_denial = check_component_request(params)
+            if component_denial is not None:
+                return component_denial
         if tool == "workspace_run":
             request = RunRequest.from_mapping(params)
             return run_command(request, CONFIG_PATH)
